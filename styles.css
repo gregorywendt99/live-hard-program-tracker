@@ -50,7 +50,7 @@
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-[data-theme="dark"] {
+html[data-theme="dark"] {
   --bg: #000000;
   --bg-elevated: #1c1c1e;
   --bg-secondary: rgba(118, 118, 128, 0.24);
@@ -81,7 +81,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  [data-theme="auto"] {
+  html[data-theme="auto"] {
     --bg: #000000;
     --bg-elevated: #1c1c1e;
     --bg-secondary: rgba(118, 118, 128, 0.24);
@@ -243,11 +243,11 @@ a:hover { text-decoration: underline; }
 .icon-btn svg { width: 20px; height: 20px; }
 
 .icon-btn .icon-moon { display: none; }
-[data-theme="dark"] .icon-btn .icon-sun { display: none; }
-[data-theme="dark"] .icon-btn .icon-moon { display: block; }
+html[data-theme="dark"] .icon-btn .icon-sun { display: none; }
+html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 @media (prefers-color-scheme: dark) {
-  [data-theme="auto"] .icon-btn .icon-sun { display: none; }
-  [data-theme="auto"] .icon-btn .icon-moon { display: block; }
+  html[data-theme="auto"] .icon-btn .icon-sun { display: none; }
+  html[data-theme="auto"] .icon-btn .icon-moon { display: block; }
 }
 
 /* Boot loader
