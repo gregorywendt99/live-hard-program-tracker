@@ -921,12 +921,12 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   color: inherit;
 }
 
-.task-main[data-action] {
-  cursor: pointer;
-  transition: background 0.15s var(--ease);
-}
-.task-main[data-action]:hover { background: rgba(120, 120, 128, 0.08); }
-.task-main[data-action]:active { background: rgba(120, 120, 128, 0.14); }
+.task-main[data-action] { cursor: pointer; }
+
+/* Hovering the interactive body lightens the whole task — including
+   behind the toggle on the right. */
+.task:has(.task-main[data-action]:hover) { background: var(--bg-tertiary); }
+.task.checked:has(.task-main[data-action]:hover) { background: var(--accent-soft-strong); }
 
 .task-toggle {
   display: grid;
@@ -935,11 +935,14 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   background: transparent;
   border: 0;
   cursor: pointer;
-  transition: background 0.15s var(--ease);
 }
-.task-toggle:hover { background: rgba(120, 120, 128, 0.08); }
-.task-toggle:hover .task-check { border-color: var(--accent); }
-.task-toggle:active { transform: scale(0.94); }
+
+/* Toggle hover only changes the ring — no background change. */
+.task-toggle:hover .task-check {
+  border-color: var(--accent);
+  transform: scale(1.08);
+}
+.task-toggle:active .task-check { transform: scale(0.92); }
 
 .task-icon {
   width: 36px;
