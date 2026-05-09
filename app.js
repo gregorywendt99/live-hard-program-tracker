@@ -75,6 +75,9 @@
 
   /* ----- State management --------------------------------------------- */
 
+  const WATER_TARGET = 128;
+  const WATER_STANDARD_PRESETS = [8, 12, 16, 20, 24];
+
   const defaultState = () => ({
     version: STATE_VERSION,
     startDate: null,
@@ -83,6 +86,7 @@
     phase1CompletedDate: null,
     days: { '75hard': {}, phase1: {}, phase2: {}, phase3: {} },
     settings: { theme: 'auto' },
+    waterCustomAmounts: [],
   });
 
   let state = defaultState();
@@ -217,6 +221,13 @@
     authError: $('#authError'),
     authSubmit: $('#authSubmit'),
     passwordHint: $('#passwordHint'),
+    waterSheet: $('#waterSheet'),
+    waterTotal: $('#waterTotal'),
+    waterPercent: $('#waterPercent'),
+    waterBarFill: $('#waterBarFill'),
+    waterPresets: $('#waterPresets'),
+    waterCustomForm: $('#waterCustomForm'),
+    waterCustomInput: $('#waterCustomInput'),
   };
 
   /* ----- Rendering ---------------------------------------------------- */
@@ -336,20 +347,25 @@
     el.tasksContainer.innerHTML = phase.tasks.map((taskId) => {
       const t = TASKS[taskId];
       const checked = !!dayState.tasks?.[taskId];
+      const isWater = taskId === 'water';
+      const detail = isWater
+        ? `${dayState.water_oz || 0} / ${WATER_TARGET} fl oz · tap to log`
+        : t.detail;
+      const mainAction = isWater ? ' data-action="open-water"' : '';
       return `
-        <button class="task ${checked ? 'checked' : ''}" data-task="${taskId}" type="button" aria-pressed="${checked}">
-          <span class="task-icon" aria-hidden="true">${ICONS[taskId]}</span>
-          <span class="task-body">
-            <span class="task-label">${t.label}</span>
-            <span class="task-detail">${t.detail}</span>
-          </span>
-          <span class="task-check" aria-hidden="true">${ICONS.check}</span>
-        </button>`;
+        <div class="task ${checked ? 'checked' : ''}" data-task-id="${taskId}">
+          <button class="task-main" type="button"${mainAction}>
+            <span class="task-icon" aria-hidden="true">${ICONS[taskId]}</span>
+            <span class="task-body">
+              <span class="task-label">${t.label}</span>
+              <span class="task-detail">${detail}</span>
+            </span>
+          </button>
+          <button class="task-toggle" type="button" data-action="toggle-task" data-task-id="${taskId}" aria-label="Mark ${t.label} ${checked ? 'incomplete' : 'complete'}" aria-pressed="${checked}">
+            <span class="task-check" aria-hidden="true">${ICONS.check}</span>
+          </button>
+        </div>`;
     }).join('');
-
-    el.tasksContainer.querySelectorAll('.task').forEach((btn) => {
-      btn.addEventListener('click', () => toggleTodayTask(btn.dataset.task));
-    });
   }
 
   function renderCalendar() {
@@ -426,6 +442,100 @@
       if (isLast) { showToast(`${phase.name} complete — incredible work.`); autoAdvanceIfPossible(); }
       else { showToast(`Day ${dayIdx + 1} done. Keep going.`); }
     }
+  }
+
+  /* ----- Water tracking ------------------------------------------------ */
+
+  function ensureToday() {
+    const dayIdx = getCurrentDayIndex();
+    if (dayIdx < 0 || !PHASES[state.currentPhase] || dayIdx >= PHASES[state.currentPhase].duration) return null;
+    if (!state.days[state.currentPhase][dayIdx]) {
+      state.days[state.currentPhase][dayIdx] = { tasks: {} };
+    }
+    return state.days[state.currentPhase][dayIdx];
+  }
+
+  function openWaterSheet() {
+    renderWaterSheet();
+    el.waterSheet.setAttribute('aria-hidden', 'false');
+    setTimeout(() => el.waterCustomInput.focus({ preventScroll: true }), 250);
+  }
+
+  function closeWaterSheet() {
+    el.waterSheet.setAttribute('aria-hidden', 'true');
+  }
+
+  function renderWaterSheet() {
+    const dayIdx = getCurrentDayIndex();
+    const day = state.days[state.currentPhase]?.[dayIdx] || { tasks: {} };
+    const total = day.water_oz || 0;
+    const pct = Math.min(100, Math.round((total / WATER_TARGET) * 100));
+
+    el.waterTotal.textContent = total;
+    el.waterPercent.textContent = `${pct}%`;
+    el.waterBarFill.style.width = `${pct}%`;
+
+    const customPresets = (state.waterCustomAmounts || []).slice().sort((a, b) => a - b);
+
+    el.waterPresets.innerHTML = [
+      ...WATER_STANDARD_PRESETS.map((amt) =>
+        `<button class="water-chip" type="button" data-action="water-add" data-water-amount="${amt}">${amt} oz</button>`
+      ),
+      ...customPresets.map((amt) => `
+        <span class="water-chip-group">
+          <button class="water-chip water-chip-custom" type="button" data-action="water-add" data-water-amount="${amt}">${amt} oz</button>
+          <button class="water-chip-remove" type="button" data-action="water-remove" data-water-amount="${amt}" aria-label="Remove ${amt} oz preset">×</button>
+        </span>
+      `)
+    ].join('');
+  }
+
+  function addWater(oz) {
+    if (!Number.isFinite(oz) || oz <= 0) return;
+    const day = ensureToday();
+    if (!day) return;
+    day.water_oz = (day.water_oz || 0) + oz;
+    let toastMsg = `+${oz} fl oz`;
+    if (day.water_oz >= WATER_TARGET && !day.tasks.water) {
+      day.tasks.water = true;
+      toastMsg = `+${oz} fl oz · Goal reached`;
+    }
+    saveState();
+    renderWaterSheet();
+    renderTasks(); renderHero(); renderCalendar(); renderJourney();
+    showToast(toastMsg);
+  }
+
+  function addCustomWater(oz) {
+    if (!Number.isFinite(oz) || oz <= 0 || oz > 500) {
+      showToast('Enter an amount between 1 and 500.');
+      return;
+    }
+    const customPresets = state.waterCustomAmounts || [];
+    if (!WATER_STANDARD_PRESETS.includes(oz) && !customPresets.includes(oz)) {
+      state.waterCustomAmounts = [...customPresets, oz].sort((a, b) => a - b);
+    }
+    addWater(oz);
+    el.waterCustomInput.value = '';
+  }
+
+  function removeCustomAmount(oz) {
+    state.waterCustomAmounts = (state.waterCustomAmounts || []).filter((x) => x !== oz);
+    saveState();
+    renderWaterSheet();
+  }
+
+  function resetWaterToday() {
+    const dayIdx = getCurrentDayIndex();
+    if (dayIdx < 0) return;
+    const day = state.days[state.currentPhase][dayIdx];
+    if (!day) return;
+    day.water_oz = 0;
+    if (day.tasks) day.tasks.water = false;
+    saveState();
+    renderWaterSheet();
+    renderTasks(); renderHero(); renderCalendar(); renderJourney();
+    showToast('Today\'s water cleared.');
   }
 
   function beginJourney() {
@@ -845,6 +955,24 @@
       case 'forgot-password': forgotPassword(); break;
       case 'continue-local': continueLocalOnly(); break;
       case 'sign-in-google': signInWithGoogle(); break;
+      case 'toggle-task': {
+        const tid = t.dataset.taskId;
+        if (tid) toggleTodayTask(tid);
+        break;
+      }
+      case 'open-water': openWaterSheet(); break;
+      case 'close-water': closeWaterSheet(); break;
+      case 'water-add': {
+        const amt = Number(t.dataset.waterAmount);
+        if (amt > 0) addWater(amt);
+        break;
+      }
+      case 'water-remove': {
+        const amt = Number(t.dataset.waterAmount);
+        if (amt > 0) removeCustomAmount(amt);
+        break;
+      }
+      case 'reset-water-today': resetWaterToday(); break;
     }
   });
 
@@ -870,6 +998,13 @@
   // Auth form
   el.authForm.addEventListener('submit', handleAuthSubmit);
 
+  // Water custom amount form
+  el.waterCustomForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const oz = parseInt(el.waterCustomInput.value, 10);
+    addCustomWater(oz);
+  });
+
   // Start date
   el.startDateInput.addEventListener('change', (e) => changeStartDate(e.target.value));
 
@@ -884,6 +1019,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (el.confirmModal.getAttribute('aria-hidden') === 'false') closeConfirm();
+      else if (el.waterSheet.getAttribute('aria-hidden') === 'false') closeWaterSheet();
       else if (el.settingsSheet.getAttribute('aria-hidden') === 'false') closeSettings();
     }
   });
