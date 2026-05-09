@@ -1,22 +1,16 @@
 // ===========================================================================
 // Firebase configuration
 // ---------------------------------------------------------------------------
-// Replace the placeholder values below with the config from your Firebase
-// project. Find them in: Firebase Console → Project settings → General →
-// Your apps → SDK setup and configuration → Config.
-//
-// These values are SAFE to commit publicly. They identify your project but
-// don't grant access — your Firestore security rules + Authorized Domains
-// are what actually protect the data.
-//
-// Setup steps live in README.md.
+// These values identify the Firebase project that backs this tracker. They
+// are SAFE to commit publicly — Firestore Security Rules + Authorized
+// Domains are what actually protect the data.
 // ===========================================================================
 
 window.firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyB9gomeXhyaMEYhtSwFm0r244lseBrcQeQ",
+  authDomain: "hard-tracker-3518b.firebaseapp.com",
+  projectId: "hard-tracker-3518b",
+  storageBucket: "hard-tracker-3518b.firebasestorage.app",
+  messagingSenderId: "81615634791",
+  appId: "1:81615634791:web:06e37cf36ed472046eefc2"
 };

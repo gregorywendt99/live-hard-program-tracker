@@ -730,6 +730,18 @@
     }
   }
 
+  async function signInWithGoogle() {
+    hideAuthError();
+    try {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: 'select_account' });
+      await firebaseAuth.signInWithPopup(provider);
+    } catch (err) {
+      if (err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') return;
+      showAuthError(prettyAuthError(err));
+    }
+  }
+
   async function forgotPassword() {
     const email = el.authEmail.value.trim();
     if (!email) { showAuthError('Enter your email above first, then tap "Forgot password?"'); return; }
@@ -773,8 +785,10 @@
       case 'auth/weak-password': return 'Password must be at least 6 characters.';
       case 'auth/too-many-requests': return 'Too many attempts. Try again in a few minutes.';
       case 'auth/network-request-failed': return 'Network error. Check your connection.';
-      case 'auth/operation-not-allowed': return 'Email/Password sign-in is not enabled in Firebase yet.';
+      case 'auth/operation-not-allowed': return 'That sign-in method isn\'t enabled in Firebase yet.';
       case 'auth/unauthorized-domain': return 'This domain isn\'t authorized in your Firebase project.';
+      case 'auth/popup-blocked': return 'Popup was blocked — allow popups for this site and try again.';
+      case 'auth/account-exists-with-different-credential': return 'You already have an account with a different sign-in method.';
       default: return err?.message || 'Something went wrong.';
     }
   }
@@ -830,6 +844,7 @@
       case 'sign-out': doSignOut(); break;
       case 'forgot-password': forgotPassword(); break;
       case 'continue-local': continueLocalOnly(); break;
+      case 'sign-in-google': signInWithGoogle(); break;
     }
   });
 
