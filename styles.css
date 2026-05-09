@@ -1234,9 +1234,14 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 
 .phase-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "num info meta"
+    "bar bar bar";
   align-items: center;
-  gap: 16px;
+  column-gap: 16px;
+  row-gap: 14px;
   padding: 16px;
   background: var(--bg-secondary);
   border-radius: var(--r-md);
@@ -1253,6 +1258,7 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 
 .phase-num {
+  grid-area: num;
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -1267,7 +1273,7 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 .phase-row.active .phase-num { background: var(--accent); color: white; }
 .phase-row.complete .phase-num { background: var(--success); color: white; }
 
-.phase-info { flex: 1; min-width: 0; }
+.phase-info { grid-area: info; min-width: 0; }
 .phase-eyebrow {
   font-size: 11px;
   font-weight: 600;
@@ -1280,27 +1286,38 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 .phase-row.complete .phase-eyebrow { color: var(--success); }
 
 .phase-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
-.phase-meta { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
+
+.phase-meta-col {
+  grid-area: meta;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.phase-state {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.phase-row.active .phase-state { color: var(--accent); }
+.phase-row.complete .phase-state { color: var(--success); }
+
+.phase-meta { font-size: 12px; color: var(--text-tertiary); }
 .phase-dates {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-secondary);
-  margin-top: 6px;
   font-variant-numeric: tabular-nums;
 }
 .phase-row.active .phase-dates { color: var(--accent); }
 .phase-row.complete .phase-dates { color: var(--success); }
 
-.phase-progress-col {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  align-items: flex-end;
-  flex-shrink: 0;
-  min-width: 110px;
-}
-
 .phase-bar {
+  grid-area: bar;
   width: 100%;
   height: 6px;
   background: var(--bg-tertiary);
@@ -1316,15 +1333,10 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 .phase-row.complete .phase-bar-fill { background: var(--success); }
 
-.phase-state {
-  font-size: 12px;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-
 @media (max-width: 540px) {
-  .phase-row { gap: 12px; padding: 14px; }
-  .phase-progress-col { min-width: 80px; }
+  .phase-row { column-gap: 10px; padding: 14px; }
+  .phase-meta, .phase-dates { font-size: 11px; }
+  .phase-state { font-size: 13px; }
 }
 
 /* Wait card

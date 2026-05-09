@@ -461,13 +461,13 @@
           <div class="phase-info">
             <div class="phase-eyebrow">Stage ${phase.stage}</div>
             <div class="phase-name">${phase.name}</div>
+          </div>
+          <div class="phase-meta-col">
+            <div class="phase-state">${stateText}</div>
             <div class="phase-meta">${phase.duration} days · ${phase.tasks.length} daily tasks</div>
             ${dateLine ? `<div class="phase-dates">${dateLine}</div>` : ''}
           </div>
-          <div class="phase-progress-col">
-            <div class="phase-state">${stateText}</div>
-            <div class="phase-bar"><div class="phase-bar-fill" style="width:${pct}%"></div></div>
-          </div>
+          <div class="phase-bar"><div class="phase-bar-fill" style="width:${pct}%"></div></div>
         </div>`;
     }).join('');
   }
