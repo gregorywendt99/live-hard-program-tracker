@@ -10,6 +10,10 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23FF9500'/%3E%3Cpath d='M30 35 L70 35 M30 50 L70 50 M30 65 L60 65' stroke='white' stroke-width='8' stroke-linecap='round'/%3E%3C/svg%3E" />
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
 </head>
 <body>
   <div class="app" id="app">
@@ -48,6 +52,97 @@
     </header>
 
     <main class="main">
+      <!-- Boot loader -->
+      <section class="boot" id="bootSection">
+        <div class="boot-spinner" aria-hidden="true"></div>
+      </section>
+
+      <!-- Setup-needed (Firebase config missing) -->
+      <section class="setup" id="setupSection" hidden>
+        <div class="setup-eyebrow">Setup required</div>
+        <h1 class="setup-title">Connect your Firebase project</h1>
+        <p class="setup-body">
+          To enable accounts and cross-device sync, this tracker needs a free Firebase project.
+          Setup takes about five minutes.
+        </p>
+        <ol class="setup-steps">
+          <li>
+            <span class="setup-step-num">1</span>
+            <div>
+              <div class="setup-step-title">Create a Firebase project</div>
+              <div class="setup-step-detail">Go to <a href="https://console.firebase.google.com" target="_blank" rel="noopener">console.firebase.google.com</a> → <strong>Add project</strong>. Skip Google Analytics.</div>
+            </div>
+          </li>
+          <li>
+            <span class="setup-step-num">2</span>
+            <div>
+              <div class="setup-step-title">Enable Email/Password auth</div>
+              <div class="setup-step-detail"><strong>Authentication</strong> → <strong>Get started</strong> → <strong>Email/Password</strong> → toggle <strong>Enable</strong> → Save.</div>
+            </div>
+          </li>
+          <li>
+            <span class="setup-step-num">3</span>
+            <div>
+              <div class="setup-step-title">Create a Firestore database</div>
+              <div class="setup-step-detail"><strong>Firestore Database</strong> → <strong>Create database</strong> → <strong>Production mode</strong> → pick a region close to you. Then go to the <strong>Rules</strong> tab and paste in the contents of <code>firestore.rules</code>.</div>
+            </div>
+          </li>
+          <li>
+            <span class="setup-step-num">4</span>
+            <div>
+              <div class="setup-step-title">Add your site to authorized domains</div>
+              <div class="setup-step-detail"><strong>Authentication</strong> → <strong>Settings</strong> → <strong>Authorized domains</strong> → add your GitHub Pages domain (e.g. <code>username.github.io</code>).</div>
+            </div>
+          </li>
+          <li>
+            <span class="setup-step-num">5</span>
+            <div>
+              <div class="setup-step-title">Copy your config into the app</div>
+              <div class="setup-step-detail"><strong>Project settings</strong> → <strong>General</strong> → scroll down → <strong>Add app</strong> → <strong>Web</strong>. Copy the six <code>firebaseConfig</code> values into <code>firebase-config.js</code> and push to GitHub.</div>
+            </div>
+          </li>
+        </ol>
+        <div class="setup-actions">
+          <a class="btn btn-primary" href="https://console.firebase.google.com" target="_blank" rel="noopener">
+            Open Firebase Console
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M7 17 17 7 M9 7h8v8"/></svg>
+          </a>
+          <button class="btn btn-secondary" data-action="continue-local">Continue without sync</button>
+        </div>
+      </section>
+
+      <!-- Login -->
+      <section class="auth" id="authSection" hidden>
+        <div class="auth-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+            <path d="M5 7 L19 7 M5 12 L19 12 M5 17 L15 17"/>
+          </svg>
+        </div>
+        <h1 class="auth-title">Live Hard</h1>
+        <p class="auth-subtitle">Sign in to sync across your devices.</p>
+
+        <div class="segmented auth-tabs" role="tablist">
+          <button class="segment active" data-auth-mode="signin" role="tab" aria-selected="true">Sign in</button>
+          <button class="segment" data-auth-mode="signup" role="tab" aria-selected="false">Sign up</button>
+        </div>
+
+        <form class="auth-form" id="authForm" novalidate>
+          <label class="field">
+            <span class="field-label">Email</span>
+            <input type="email" id="authEmail" autocomplete="email" required />
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input type="password" id="authPassword" autocomplete="current-password" required minlength="6" />
+            <span class="field-hint" id="passwordHint">At least 6 characters.</span>
+          </label>
+          <div class="auth-error" id="authError" hidden></div>
+          <button type="submit" class="btn btn-primary btn-large btn-full" id="authSubmit">Sign in</button>
+          <button type="button" class="auth-link" data-action="forgot-password">Forgot password?</button>
+        </form>
+        <p class="auth-fineprint">Your progress is private — only you can see it.</p>
+      </section>
+
       <!-- Welcome / onboarding (shown when no journey started) -->
       <section class="welcome" id="welcomeSection" hidden>
         <div class="welcome-eyebrow">Begin</div>
@@ -192,6 +287,21 @@
           </button>
         </div>
         <div class="sheet-body">
+          <div class="settings-group" id="accountGroup" hidden>
+            <div class="settings-group-title">Account</div>
+            <div class="account-row">
+              <div class="account-avatar" id="accountAvatar">L</div>
+              <div class="account-meta">
+                <div class="account-email" id="accountEmail">—</div>
+                <div class="account-status">Synced across your devices</div>
+              </div>
+            </div>
+            <button class="settings-btn" data-action="sign-out">
+              <span>Sign out</span>
+              <span class="settings-btn-detail">You'll be returned to the login screen</span>
+            </button>
+          </div>
+
           <div class="settings-group">
             <div class="settings-group-title">Appearance</div>
             <div class="segmented" role="radiogroup" aria-label="Theme">

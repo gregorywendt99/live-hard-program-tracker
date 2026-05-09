@@ -1,12 +1,13 @@
 /* ==========================================================================
-   Live Hard Tracker — app logic
+   Live Hard Tracker — app logic with Firebase auth + Firestore sync
    ========================================================================== */
 
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'liveHardState_v1';
   const STATE_VERSION = 1;
+  const LEGACY_KEY = 'liveHardState_v1';
+  const LOCAL_ONLY_KEY = 'liveHardLocalOnly';
 
   /* ----- Phase + task definitions -------------------------------------- */
 
@@ -40,101 +41,94 @@
   };
 
   const PHASES = {
-    '75hard': {
-      id: '75hard',
-      name: '75 HARD',
-      duration: 75,
-      tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'],
-    },
-    phase1: {
-      id: 'phase1',
-      name: 'Phase 1',
-      duration: 30,
-      tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'visualization'],
-    },
-    phase2: {
-      id: 'phase2',
-      name: 'Phase 2',
-      duration: 30,
-      tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'],
-    },
-    phase3: {
-      id: 'phase3',
-      name: 'Phase 3',
-      duration: 30,
-      tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'stranger', 'kindness'],
-    },
+    '75hard': { id: '75hard', name: '75 HARD', duration: 75, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'] },
+    phase1: { id: 'phase1', name: 'Phase 1', duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'visualization'] },
+    phase2: { id: 'phase2', name: 'Phase 2', duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'] },
+    phase3: { id: 'phase3', name: 'Phase 3', duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'stranger', 'kindness'] },
   };
-
   const PHASE_ORDER = ['75hard', 'phase1', 'phase2', 'phase3'];
 
-  /* ----- Date utilities ------------------------------------------------ */
+  /* ----- Date utilities ----------------------------------------------- */
 
   const todayISO = () => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   };
+  const dateFromISO = (iso) => { const [y, m, d] = iso.split('-').map(Number); return new Date(y, m - 1, d); };
+  const isoFromDate = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const addDays = (iso, n) => { const d = dateFromISO(iso); d.setDate(d.getDate() + n); return isoFromDate(d); };
+  const daysBetween = (iso1, iso2) => Math.round((dateFromISO(iso2) - dateFromISO(iso1)) / 86400000);
+  const formatDate = (iso) => dateFromISO(iso).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+  const formatShortDate = (iso) => dateFromISO(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 
-  const dateFromISO = (iso) => {
-    const [y, m, d] = iso.split('-').map(Number);
-    return new Date(y, m - 1, d);
-  };
+  /* ----- App phase + auth state --------------------------------------- */
 
-  const isoFromDate = (d) =>
-    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-  const addDays = (iso, n) => {
-    const d = dateFromISO(iso);
-    d.setDate(d.getDate() + n);
-    return isoFromDate(d);
-  };
-
-  const daysBetween = (iso1, iso2) =>
-    Math.round((dateFromISO(iso2) - dateFromISO(iso1)) / 86400000);
-
-  const formatDate = (iso) => {
-    const d = dateFromISO(iso);
-    return d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
-  };
-
-  const formatShortDate = (iso) => {
-    const d = dateFromISO(iso);
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  };
+  let appPhase = 'loading'; // 'loading' | 'setup' | 'auth' | 'app'
+  let firebaseApp = null;
+  let firebaseAuth = null;
+  let firestore = null;
+  let currentUser = null;
+  let useLocalOnly = false;
+  let unsubFirestore = null;
+  let saveDebounceTimer = null;
+  let authMode = 'signin';
 
   /* ----- State management --------------------------------------------- */
 
   const defaultState = () => ({
     version: STATE_VERSION,
     startDate: null,
-    currentPhase: null, // null | '75hard' | 'phase1' | 'phase1-wait' | 'phase2' | 'phase3' | 'complete'
+    currentPhase: null,
     phaseStartDate: null,
     phase1CompletedDate: null,
     days: { '75hard': {}, phase1: {}, phase2: {}, phase3: {} },
     settings: { theme: 'auto' },
   });
 
-  let state = loadState();
+  let state = defaultState();
 
-  function loadState() {
+  const localKey = () =>
+    currentUser ? `liveHardState_v1_${currentUser.uid}` : LEGACY_KEY;
+
+  function loadStateLocal() {
+    const tryKeys = currentUser ? [localKey(), LEGACY_KEY] : [LEGACY_KEY];
+    for (const k of tryKeys) {
+      try {
+        const raw = localStorage.getItem(k);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        if (parsed.version !== STATE_VERSION) continue;
+        const def = defaultState();
+        return { ...def, ...parsed, days: { ...def.days, ...(parsed.days || {}) }, settings: { ...def.settings, ...(parsed.settings || {}) } };
+      } catch {}
+    }
+    return defaultState();
+  }
+
+  function saveStateLocal() {
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return defaultState();
-      const parsed = JSON.parse(raw);
-      if (parsed.version !== STATE_VERSION) return defaultState();
-      const def = defaultState();
-      return { ...def, ...parsed, days: { ...def.days, ...(parsed.days || {}) }, settings: { ...def.settings, ...(parsed.settings || {}) } };
-    } catch {
-      return defaultState();
+      localStorage.setItem(localKey(), JSON.stringify(state));
+    } catch (err) {
+      console.error('Failed to save state', err);
     }
   }
 
   function saveState() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    } catch (err) {
-      console.error('Failed to save state', err);
+    saveStateLocal();
+    if (currentUser && !useLocalOnly && firestore) {
+      saveStateRemote();
     }
+  }
+
+  function saveStateRemote() {
+    clearTimeout(saveDebounceTimer);
+    saveDebounceTimer = setTimeout(async () => {
+      try {
+        await firestore.collection('users').doc(currentUser.uid).set(state);
+      } catch (e) {
+        console.error('Save to Firestore failed', e);
+      }
+    }, 200);
   }
 
   /* ----- Phase / day logic -------------------------------------------- */
@@ -143,52 +137,44 @@
     if (!state.phaseStartDate) return -1;
     return daysBetween(state.phaseStartDate, todayISO());
   }
-
   function isDayComplete(phaseId, dayIndex) {
     const day = state.days[phaseId]?.[dayIndex];
     if (!day) return false;
-    const required = PHASES[phaseId].tasks;
-    return required.every((t) => day.tasks?.[t]);
+    return PHASES[phaseId].tasks.every((t) => day.tasks?.[t]);
   }
-
   function completedDaysCount(phaseId) {
     const phase = PHASES[phaseId];
     if (!phase) return 0;
     let count = 0;
-    for (let i = 0; i < phase.duration; i++) {
-      if (isDayComplete(phaseId, i)) count++;
-    }
+    for (let i = 0; i < phase.duration; i++) if (isDayComplete(phaseId, i)) count++;
     return count;
   }
-
   function currentStreak() {
     if (!state.currentPhase || !PHASES[state.currentPhase]) return 0;
-    const phaseId = state.currentPhase;
     const today = getCurrentDayIndex();
     if (today < 0) return 0;
     let streak = 0;
     for (let i = today; i >= 0; i--) {
-      if (isDayComplete(phaseId, i)) streak++;
-      else if (i < today) break; // today not yet complete is fine
+      if (isDayComplete(state.currentPhase, i)) streak++;
+      else if (i < today) break;
     }
     return streak;
   }
-
   function isPhaseComplete(phaseId) {
     const phase = PHASES[phaseId];
-    if (!phase) return false;
-    return completedDaysCount(phaseId) === phase.duration;
+    return phase ? completedDaysCount(phaseId) === phase.duration : false;
   }
-
   function yearDeadlineISO() {
-    if (!state.startDate) return null;
-    return addDays(state.startDate, 365);
+    return state.startDate ? addDays(state.startDate, 365) : null;
   }
 
   /* ----- DOM refs ----------------------------------------------------- */
 
   const $ = (sel) => document.querySelector(sel);
   const el = {
+    boot: $('#bootSection'),
+    setup: $('#setupSection'),
+    auth: $('#authSection'),
     welcome: $('#welcomeSection'),
     wait: $('#waitSection'),
     dashboard: $('#dashboardSection'),
@@ -222,21 +208,38 @@
     startPhase2Btn: $('#startPhase2Btn'),
     resetPhaseLabel: $('#resetPhaseLabel'),
     importInput: $('#importInput'),
+    accountGroup: $('#accountGroup'),
+    accountAvatar: $('#accountAvatar'),
+    accountEmail: $('#accountEmail'),
+    authForm: $('#authForm'),
+    authEmail: $('#authEmail'),
+    authPassword: $('#authPassword'),
+    authError: $('#authError'),
+    authSubmit: $('#authSubmit'),
+    passwordHint: $('#passwordHint'),
   };
 
   /* ----- Rendering ---------------------------------------------------- */
 
+  function showSection(which) {
+    el.boot.hidden = which !== 'boot';
+    el.setup.hidden = which !== 'setup';
+    el.auth.hidden = which !== 'auth';
+    el.welcome.hidden = which !== 'welcome';
+    el.wait.hidden = which !== 'wait';
+    el.dashboard.hidden = which !== 'dashboard';
+  }
+
   function render() {
     applyTheme();
-    if (!state.currentPhase) {
-      showSection('welcome');
-      return;
-    }
-    if (state.currentPhase === 'phase1-wait') {
-      showSection('wait');
-      renderWait();
-      return;
-    }
+    if (appPhase === 'loading') { showSection('boot'); return; }
+    if (appPhase === 'setup') { showSection('setup'); return; }
+    if (appPhase === 'auth') { showSection('auth'); updateAuthUI(); return; }
+
+    // appPhase === 'app'
+    updateAccountUI();
+    if (!state.currentPhase) { showSection('welcome'); return; }
+    if (state.currentPhase === 'phase1-wait') { showSection('wait'); renderWait(); return; }
     showSection('dashboard');
     renderHero();
     renderTasks();
@@ -245,17 +248,33 @@
     autoAdvanceIfPossible();
   }
 
-  function showSection(which) {
-    el.welcome.hidden = which !== 'welcome';
-    el.wait.hidden = which !== 'wait';
-    el.dashboard.hidden = which !== 'dashboard';
-  }
-
   function applyTheme() {
     document.documentElement.setAttribute('data-theme', state.settings.theme || 'auto');
     document.querySelectorAll('.segment[data-theme]').forEach((s) => {
       s.classList.toggle('active', s.dataset.theme === (state.settings.theme || 'auto'));
     });
+  }
+
+  function updateAccountUI() {
+    if (currentUser && !useLocalOnly) {
+      el.accountGroup.hidden = false;
+      el.accountEmail.textContent = currentUser.email || 'Anonymous';
+      el.accountAvatar.textContent = (currentUser.email || 'L').charAt(0).toUpperCase();
+    } else {
+      el.accountGroup.hidden = true;
+    }
+  }
+
+  function updateAuthUI() {
+    document.querySelectorAll('[data-auth-mode]').forEach((b) => {
+      const active = b.dataset.authMode === authMode;
+      b.classList.toggle('active', active);
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    el.authSubmit.textContent = authMode === 'signin' ? 'Sign in' : 'Create account';
+    el.authPassword.setAttribute('autocomplete', authMode === 'signin' ? 'current-password' : 'new-password');
+    el.passwordHint.hidden = authMode === 'signin';
+    hideAuthError();
   }
 
   function renderHero() {
@@ -276,31 +295,19 @@
     el.streak.textContent = currentStreak();
 
     const circumference = 2 * Math.PI * 52;
-    const progress = completed / phase.duration;
-    el.ringFill.style.strokeDashoffset = circumference * (1 - progress);
+    el.ringFill.style.strokeDashoffset = circumference * (1 - completed / phase.duration);
 
-    // Status pill
     const status = el.heroStatus;
     status.classList.remove('failed', 'complete');
-    if (isPhaseComplete(state.currentPhase)) {
-      status.textContent = 'Phase complete';
-      status.classList.add('complete');
-    } else if (dayIdx >= phase.duration) {
-      status.textContent = 'Past final day';
-      status.classList.add('failed');
-    } else if (dayIdx < 0) {
-      status.textContent = 'Not started';
-    } else {
-      status.textContent = 'In progress';
-    }
+    if (isPhaseComplete(state.currentPhase)) { status.textContent = 'Phase complete'; status.classList.add('complete'); }
+    else if (dayIdx >= phase.duration) { status.textContent = 'Past final day'; status.classList.add('failed'); }
+    else if (dayIdx < 0) { status.textContent = 'Not started'; }
+    else { status.textContent = 'In progress'; }
 
-    // Year deadline
     const deadline = yearDeadlineISO();
     if (deadline) {
       const remain = daysBetween(todayISO(), deadline);
-      el.yearDeadline.textContent = remain >= 0
-        ? `${remain} days until year deadline`
-        : `${-remain} days past deadline`;
+      el.yearDeadline.textContent = remain >= 0 ? `${remain} days until year deadline` : `${-remain} days past deadline`;
     }
   }
 
@@ -308,7 +315,6 @@
     const phase = PHASES[state.currentPhase];
     if (!phase) return;
     const dayIdx = getCurrentDayIndex();
-
     el.todayHeading.textContent = `Day ${Math.max(1, dayIdx + 1)} checklist`;
 
     if (dayIdx < 0) {
@@ -324,26 +330,22 @@
 
     const dayState = state.days[state.currentPhase][dayIdx] || { tasks: {} };
     const checkedCount = phase.tasks.filter((t) => dayState.tasks?.[t]).length;
-
     el.completionBadge.textContent = `${checkedCount} / ${phase.tasks.length}`;
     el.completionBadge.classList.toggle('complete', checkedCount === phase.tasks.length);
 
-    el.tasksContainer.innerHTML = phase.tasks
-      .map((taskId) => {
-        const t = TASKS[taskId];
-        const checked = !!dayState.tasks?.[taskId];
-        return `
-          <button class="task ${checked ? 'checked' : ''}" data-task="${taskId}" type="button" aria-pressed="${checked}">
-            <span class="task-icon" aria-hidden="true">${ICONS[taskId]}</span>
-            <span class="task-body">
-              <span class="task-label">${t.label}</span>
-              <span class="task-detail">${t.detail}</span>
-            </span>
-            <span class="task-check" aria-hidden="true">${ICONS.check}</span>
-          </button>
-        `;
-      })
-      .join('');
+    el.tasksContainer.innerHTML = phase.tasks.map((taskId) => {
+      const t = TASKS[taskId];
+      const checked = !!dayState.tasks?.[taskId];
+      return `
+        <button class="task ${checked ? 'checked' : ''}" data-task="${taskId}" type="button" aria-pressed="${checked}">
+          <span class="task-icon" aria-hidden="true">${ICONS[taskId]}</span>
+          <span class="task-body">
+            <span class="task-label">${t.label}</span>
+            <span class="task-detail">${t.detail}</span>
+          </span>
+          <span class="task-check" aria-hidden="true">${ICONS.check}</span>
+        </button>`;
+    }).join('');
 
     el.tasksContainer.querySelectorAll('.task').forEach((btn) => {
       btn.addEventListener('click', () => toggleTodayTask(btn.dataset.task));
@@ -381,13 +383,7 @@
       if (isActive) cls.push('active');
       if (isDone) cls.push('complete');
       const pct = (completed / phase.duration) * 100;
-      const stateText = isDone
-        ? 'Done'
-        : isActive
-        ? `${completed} / ${phase.duration}`
-        : completed > 0
-        ? `${completed} / ${phase.duration}`
-        : 'Locked';
+      const stateText = isDone ? 'Done' : isActive ? `${completed} / ${phase.duration}` : completed > 0 ? `${completed} / ${phase.duration}` : 'Locked';
       return `
         <div class="${cls.join(' ')}">
           <div class="phase-num">${idx + 1}</div>
@@ -397,8 +393,7 @@
           </div>
           <div class="phase-bar"><div class="phase-bar-fill" style="width:${pct}%"></div></div>
           <div class="phase-state">${stateText}</div>
-        </div>
-      `;
+        </div>`;
     }).join('');
   }
 
@@ -413,7 +408,7 @@
     el.startPhase2Btn.disabled = done < 30;
   }
 
-  /* ----- Actions ------------------------------------------------------ */
+  /* ----- Tracker actions ---------------------------------------------- */
 
   function toggleTodayTask(taskId) {
     const dayIdx = getCurrentDayIndex();
@@ -425,28 +420,22 @@
     const day = state.days[state.currentPhase][dayIdx];
     day.tasks[taskId] = !day.tasks[taskId];
     saveState();
-    renderTasks();
-    renderHero();
-    renderCalendar();
-    renderJourney();
+    renderTasks(); renderHero(); renderCalendar(); renderJourney();
     if (PHASES[state.currentPhase].tasks.every((t) => day.tasks[t])) {
       const isLast = dayIdx === phase.duration - 1;
-      if (isLast) {
-        showToast(`${phase.name} complete — incredible work.`);
-        autoAdvanceIfPossible();
-      } else {
-        showToast(`Day ${dayIdx + 1} done. Keep going.`);
-      }
+      if (isLast) { showToast(`${phase.name} complete — incredible work.`); autoAdvanceIfPossible(); }
+      else { showToast(`Day ${dayIdx + 1} done. Keep going.`); }
     }
   }
 
   function beginJourney() {
+    const settings = state.settings;
     state = defaultState();
+    state.settings = settings;
     state.startDate = todayISO();
     state.currentPhase = '75hard';
     state.phaseStartDate = todayISO();
-    saveState();
-    render();
+    saveState(); render();
     showToast('Day 1 of 75 HARD. Let\'s go.');
   }
 
@@ -455,8 +444,7 @@
     if (dayIdx < 0) return;
     if (state.days[state.currentPhase][dayIdx]) {
       state.days[state.currentPhase][dayIdx] = { tasks: {} };
-      saveState();
-      render();
+      saveState(); render();
       showToast('Today reset.');
     }
   }
@@ -465,18 +453,14 @@
     const phase = PHASES[state.currentPhase];
     if (!phase) return;
     const isPhase3 = state.currentPhase === 'phase3';
-    confirm({
+    askConfirm({
       title: isPhase3 ? 'Restart entire program?' : `Restart ${phase.name}?`,
       body: isPhase3
         ? 'Per the Live Hard rules, missing a task during Phase 3 resets the entire program back to Day 1 of 75 HARD.'
         : `You will lose all progress in ${phase.name} and restart from Day 1 today.`,
       onConfirm: () => {
-        if (isPhase3) {
-          beginJourney();
-        } else {
-          resetPhase(state.currentPhase, true);
-          showToast(`${phase.name} restarted from Day 1.`);
-        }
+        if (isPhase3) beginJourney();
+        else { resetPhase(state.currentPhase, true); showToast(`${phase.name} restarted from Day 1.`); }
       },
     });
   }
@@ -488,88 +472,60 @@
       state.phaseStartDate = todayISO();
       if (phaseId === '75hard') state.startDate = todayISO();
     }
-    saveState();
-    render();
+    saveState(); render();
   }
 
   function resetAll() {
-    confirm({
+    askConfirm({
       title: 'Reset entire journey?',
       body: 'This erases all progress across every phase and returns you to the welcome screen.',
       onConfirm: () => {
-        localStorage.removeItem(STORAGE_KEY);
+        const settings = state.settings;
         state = defaultState();
-        render();
-        closeSettings();
+        state.settings = settings;
+        saveState(); render(); closeSettings();
         showToast('Journey reset.');
       },
     });
   }
 
   function autoAdvanceIfPossible() {
-    if (!state.currentPhase) return;
-    if (!isPhaseComplete(state.currentPhase)) return;
-    const idx = PHASE_ORDER.indexOf(state.currentPhase);
-    if (idx === -1) return;
+    if (!state.currentPhase || !isPhaseComplete(state.currentPhase)) return;
+    if (PHASE_ORDER.indexOf(state.currentPhase) === -1) return;
 
     if (state.currentPhase === '75hard') {
-      // Offer to start Phase 1 (auto-start same day)
-      state.currentPhase = 'phase1';
-      state.phaseStartDate = todayISO();
-      saveState();
-      render();
-      showToast('75 HARD complete. Phase 1 begins today.');
+      state.currentPhase = 'phase1'; state.phaseStartDate = todayISO();
+      saveState(); render(); showToast('75 HARD complete. Phase 1 begins today.');
     } else if (state.currentPhase === 'phase1') {
-      state.phase1CompletedDate = todayISO();
-      state.currentPhase = 'phase1-wait';
-      saveState();
-      render();
-      showToast('Phase 1 complete. 30-day rest begins now.');
+      state.phase1CompletedDate = todayISO(); state.currentPhase = 'phase1-wait';
+      saveState(); render(); showToast('Phase 1 complete. 30-day rest begins now.');
     } else if (state.currentPhase === 'phase2') {
-      state.currentPhase = 'phase3';
-      state.phaseStartDate = todayISO();
-      saveState();
-      render();
-      showToast('Phase 2 complete. Phase 3 begins today.');
+      state.currentPhase = 'phase3'; state.phaseStartDate = todayISO();
+      saveState(); render(); showToast('Phase 2 complete. Phase 3 begins today.');
     } else if (state.currentPhase === 'phase3') {
       state.currentPhase = 'complete';
-      saveState();
-      render();
-      showToast('Live Hard complete. You did it.');
+      saveState(); render(); showToast('Live Hard complete. You did it.');
     }
   }
 
   function startPhase2() {
     if (!state.phase1CompletedDate) return;
-    const elapsed = daysBetween(state.phase1CompletedDate, todayISO());
-    if (elapsed < 30) return;
-    state.currentPhase = 'phase2';
-    state.phaseStartDate = todayISO();
-    saveState();
-    render();
-    showToast('Phase 2 begins today.');
+    if (daysBetween(state.phase1CompletedDate, todayISO()) < 30) return;
+    state.currentPhase = 'phase2'; state.phaseStartDate = todayISO();
+    saveState(); render(); showToast('Phase 2 begins today.');
   }
 
-  /* ----- Theme -------------------------------------------------------- */
+  /* ----- Theme + settings --------------------------------------------- */
 
   function cycleTheme() {
     const order = ['auto', 'light', 'dark'];
     const cur = state.settings.theme || 'auto';
-    const next = order[(order.indexOf(cur) + 1) % order.length];
-    state.settings.theme = next;
-    saveState();
-    applyTheme();
-    showToast(`Theme: ${next}`);
+    state.settings.theme = order[(order.indexOf(cur) + 1) % order.length];
+    saveState(); applyTheme(); showToast(`Theme: ${state.settings.theme}`);
   }
-
   function setTheme(theme) {
-    state.settings.theme = theme;
-    saveState();
-    applyTheme();
+    state.settings.theme = theme; saveState(); applyTheme();
   }
-
-  /* ----- Settings sheet ------------------------------------------------ */
-
   function openSettings() {
     el.settingsSheet.setAttribute('aria-hidden', 'false');
     if (state.startDate) el.startDateInput.value = state.startDate;
@@ -577,14 +533,11 @@
       el.resetPhaseLabel.textContent = `Restart ${PHASES[state.currentPhase].name}`;
     }
   }
-
-  function closeSettings() {
-    el.settingsSheet.setAttribute('aria-hidden', 'true');
-  }
+  function closeSettings() { el.settingsSheet.setAttribute('aria-hidden', 'true'); }
 
   function changeStartDate(newDate) {
     if (!newDate || newDate === state.startDate) return;
-    confirm({
+    askConfirm({
       title: 'Change start date?',
       body: 'This will recompute the calendar from the new start date but keep your task data.',
       onConfirm: () => {
@@ -593,31 +546,25 @@
         state.startDate = newDate;
         if (state.phaseStartDate === oldStart) state.phaseStartDate = newDate;
         else if (state.phaseStartDate) state.phaseStartDate = addDays(state.phaseStartDate, diff);
-        saveState();
-        render();
-        closeSettings();
+        saveState(); render(); closeSettings();
         showToast('Start date updated.');
       },
     });
   }
 
-  /* ----- Confirm modal ------------------------------------------------- */
+  /* ----- Confirm modal + toast ---------------------------------------- */
 
   let confirmCallback = null;
-
-  function confirm({ title, body, onConfirm }) {
+  function askConfirm({ title, body, onConfirm }) {
     el.confirmTitle.textContent = title;
     el.confirmBody.textContent = body;
     confirmCallback = onConfirm;
     el.confirmModal.setAttribute('aria-hidden', 'false');
   }
-
   function closeConfirm() {
     el.confirmModal.setAttribute('aria-hidden', 'true');
     confirmCallback = null;
   }
-
-  /* ----- Toast --------------------------------------------------------- */
 
   let toastTimer;
   function showToast(message) {
@@ -633,11 +580,8 @@
     const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url;
-    a.download = `live-hard-${todayISO()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    a.href = url; a.download = `live-hard-${todayISO()}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
     showToast('Backup downloaded.');
   }
@@ -647,26 +591,200 @@
     reader.onload = (e) => {
       try {
         const parsed = JSON.parse(e.target.result);
-        if (!parsed || typeof parsed !== 'object' || parsed.version !== STATE_VERSION) {
-          throw new Error('Invalid file');
-        }
-        confirm({
+        if (!parsed || typeof parsed !== 'object' || parsed.version !== STATE_VERSION) throw new Error('Invalid file');
+        askConfirm({
           title: 'Replace current progress?',
           body: 'This will overwrite your current data with the contents of the backup file.',
           onConfirm: () => {
             const def = defaultState();
             state = { ...def, ...parsed, days: { ...def.days, ...(parsed.days || {}) }, settings: { ...def.settings, ...(parsed.settings || {}) } };
-            saveState();
-            render();
-            closeSettings();
+            saveState(); render(); closeSettings();
             showToast('Backup restored.');
           },
         });
-      } catch {
-        showToast('Could not read that file.');
-      }
+      } catch { showToast('Could not read that file.'); }
     };
     reader.readAsText(file);
+  }
+
+  /* ----- Firebase + auth ---------------------------------------------- */
+
+  function isFirebaseConfigured() {
+    const c = window.firebaseConfig;
+    if (!c) return false;
+    const required = ['apiKey', 'authDomain', 'projectId', 'appId'];
+    return required.every((k) => typeof c[k] === 'string' && c[k] && !c[k].startsWith('YOUR_'));
+  }
+
+  function initFirebase() {
+    firebaseApp = firebase.initializeApp(window.firebaseConfig);
+    firebaseAuth = firebase.auth();
+    firestore = firebase.firestore();
+    firebaseAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
+    firestore.enablePersistence({ synchronizeTabs: true }).catch(() => {});
+  }
+
+  function onAuth(user) {
+    if (user) {
+      currentUser = user;
+      loadFromFirestore().then(() => {
+        listenToFirestore();
+        appPhase = 'app';
+        render();
+      }).catch((e) => {
+        console.error('Firestore load failed', e);
+        state = loadStateLocal();
+        appPhase = 'app';
+        render();
+      });
+    } else {
+      currentUser = null;
+      if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
+      state = defaultState();
+      appPhase = 'auth';
+      render();
+    }
+  }
+
+  function readLocalKey(key) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (parsed.version !== STATE_VERSION) return null;
+      const def = defaultState();
+      return { ...def, ...parsed, days: { ...def.days, ...(parsed.days || {}) }, settings: { ...def.settings, ...(parsed.settings || {}) } };
+    } catch { return null; }
+  }
+
+  async function loadFromFirestore() {
+    const docRef = firestore.collection('users').doc(currentUser.uid);
+    const snap = await docRef.get();
+    const def = defaultState();
+
+    // 1. Remote data wins if present
+    if (snap.exists && snap.data() && snap.data().version === STATE_VERSION) {
+      const data = snap.data();
+      state = { ...def, ...data, days: { ...def.days, ...(data.days || {}) }, settings: { ...def.settings, ...(data.settings || {}) } };
+      saveStateLocal();
+      return;
+    }
+
+    // 2. This user's local cache (e.g. signed in here before, then offline edits)
+    const userCache = readLocalKey(localKey());
+    if (userCache && userCache.startDate) {
+      state = userCache;
+      try { await docRef.set(state); } catch (e) { console.error(e); }
+      return;
+    }
+
+    // 3. Legacy single-user data from before auth was added.
+    // Only migrate it once, then clear it so other accounts on this browser don't pick it up.
+    const legacy = readLocalKey(LEGACY_KEY);
+    if (legacy && legacy.startDate) {
+      state = legacy;
+      saveStateLocal();
+      try { await docRef.set(state); } catch (e) { console.error(e); }
+      try { localStorage.removeItem(LEGACY_KEY); } catch {}
+      setTimeout(() => showToast('Imported your existing progress.'), 400);
+      return;
+    }
+
+    // 4. Brand-new account
+    state = def;
+    try { await docRef.set(state); } catch (e) { console.error(e); }
+  }
+
+  function listenToFirestore() {
+    if (unsubFirestore) unsubFirestore();
+    const docRef = firestore.collection('users').doc(currentUser.uid);
+    unsubFirestore = docRef.onSnapshot((snap) => {
+      if (!snap.exists) return;
+      if (snap.metadata.hasPendingWrites) return;
+      const data = snap.data();
+      if (!data || data.version !== STATE_VERSION) return;
+      const def = defaultState();
+      state = { ...def, ...data, days: { ...def.days, ...(data.days || {}) }, settings: { ...def.settings, ...(data.settings || {}) } };
+      saveStateLocal();
+      render();
+    }, (err) => console.error('Firestore listener error', err));
+  }
+
+  async function handleAuthSubmit(e) {
+    e.preventDefault();
+    const email = el.authEmail.value.trim();
+    const password = el.authPassword.value;
+    if (!email || !password) return;
+    hideAuthError();
+    el.authSubmit.disabled = true;
+    const originalLabel = el.authSubmit.textContent;
+    el.authSubmit.textContent = authMode === 'signin' ? 'Signing in…' : 'Creating account…';
+    try {
+      if (authMode === 'signin') await firebaseAuth.signInWithEmailAndPassword(email, password);
+      else await firebaseAuth.createUserWithEmailAndPassword(email, password);
+      el.authForm.reset();
+    } catch (err) {
+      showAuthError(prettyAuthError(err));
+      el.authSubmit.disabled = false;
+      el.authSubmit.textContent = originalLabel;
+    }
+  }
+
+  async function forgotPassword() {
+    const email = el.authEmail.value.trim();
+    if (!email) { showAuthError('Enter your email above first, then tap "Forgot password?"'); return; }
+    try {
+      await firebaseAuth.sendPasswordResetEmail(email);
+      showToast(`Password reset email sent to ${email}`);
+      hideAuthError();
+    } catch (err) {
+      showAuthError(prettyAuthError(err));
+    }
+  }
+
+  async function doSignOut() {
+    try {
+      await firebaseAuth.signOut();
+      closeSettings();
+      showToast('Signed out.');
+    } catch {
+      showToast('Sign-out failed.');
+    }
+  }
+
+  function showAuthError(msg) {
+    el.authError.textContent = msg;
+    el.authError.hidden = false;
+  }
+  function hideAuthError() {
+    el.authError.hidden = true;
+    el.authError.textContent = '';
+  }
+
+  function prettyAuthError(err) {
+    const code = err?.code || '';
+    switch (code) {
+      case 'auth/invalid-email': return 'That email looks invalid.';
+      case 'auth/user-not-found': return 'No account with that email.';
+      case 'auth/wrong-password':
+      case 'auth/invalid-credential':
+      case 'auth/invalid-login-credentials': return 'Wrong email or password.';
+      case 'auth/email-already-in-use': return 'An account with that email already exists.';
+      case 'auth/weak-password': return 'Password must be at least 6 characters.';
+      case 'auth/too-many-requests': return 'Too many attempts. Try again in a few minutes.';
+      case 'auth/network-request-failed': return 'Network error. Check your connection.';
+      case 'auth/operation-not-allowed': return 'Email/Password sign-in is not enabled in Firebase yet.';
+      case 'auth/unauthorized-domain': return 'This domain isn\'t authorized in your Firebase project.';
+      default: return err?.message || 'Something went wrong.';
+    }
+  }
+
+  function continueLocalOnly() {
+    sessionStorage.setItem(LOCAL_ONLY_KEY, '1');
+    useLocalOnly = true;
+    state = loadStateLocal();
+    appPhase = 'app';
+    render();
   }
 
   /* ----- Event wiring -------------------------------------------------- */
@@ -685,7 +803,7 @@
       case 'fail-day': failToday(); break;
       case 'reset-current-phase':
         if (state.currentPhase && PHASES[state.currentPhase]) {
-          confirm({
+          askConfirm({
             title: `Restart ${PHASES[state.currentPhase].name}?`,
             body: `All progress in ${PHASES[state.currentPhase].name} will be erased and Day 1 will be today.`,
             onConfirm: () => { resetPhase(state.currentPhase, true); closeSettings(); showToast('Phase restarted.'); },
@@ -698,7 +816,7 @@
       case 'reset-phase3': {
         const map = { 'reset-75hard': '75hard', 'reset-phase1': 'phase1', 'reset-phase2': 'phase2', 'reset-phase3': 'phase3' };
         const pid = map[action];
-        confirm({
+        askConfirm({
           title: `Restart ${PHASES[pid].name}?`,
           body: `All progress in ${PHASES[pid].name} will be erased.`,
           onConfirm: () => { resetPhase(pid, state.currentPhase === pid); closeSettings(); showToast(`${PHASES[pid].name} reset.`); },
@@ -709,7 +827,18 @@
       case 'start-phase2': startPhase2(); break;
       case 'export': exportData(); break;
       case 'import': el.importInput.click(); break;
+      case 'sign-out': doSignOut(); break;
+      case 'forgot-password': forgotPassword(); break;
+      case 'continue-local': continueLocalOnly(); break;
     }
+  });
+
+  // Auth tab switching
+  document.addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-auth-mode]');
+    if (!tab) return;
+    authMode = tab.dataset.authMode;
+    updateAuthUI();
   });
 
   // Theme segmented control
@@ -722,6 +851,9 @@
     if (confirmCallback) confirmCallback();
     closeConfirm();
   });
+
+  // Auth form
+  el.authForm.addEventListener('submit', handleAuthSubmit);
 
   // Start date
   el.startDateInput.addEventListener('change', (e) => changeStartDate(e.target.value));
@@ -741,20 +873,45 @@
     }
   });
 
-  // Re-render at midnight (so day rolls over)
+  // Re-render at midnight
   function scheduleMidnightRefresh() {
     const now = new Date();
     const nextMidnight = new Date(now);
     nextMidnight.setHours(24, 0, 5, 0);
-    const ms = nextMidnight - now;
-    setTimeout(() => { render(); scheduleMidnightRefresh(); }, ms);
+    setTimeout(() => { render(); scheduleMidnightRefresh(); }, nextMidnight - now);
   }
   scheduleMidnightRefresh();
-
-  // Re-render when tab becomes visible (handles overnight)
   document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
 
   /* ----- Boot --------------------------------------------------------- */
 
-  render();
+  function boot() {
+    // Local-only mode chosen this session
+    if (sessionStorage.getItem(LOCAL_ONLY_KEY) === '1') {
+      useLocalOnly = true;
+      state = loadStateLocal();
+      appPhase = 'app';
+      render();
+      return;
+    }
+
+    // Firebase not configured
+    if (!isFirebaseConfigured() || typeof firebase === 'undefined') {
+      appPhase = 'setup';
+      render();
+      return;
+    }
+
+    // Firebase configured — init and wait for auth
+    try {
+      initFirebase();
+      firebaseAuth.onAuthStateChanged(onAuth);
+    } catch (e) {
+      console.error('Firebase init failed', e);
+      appPhase = 'setup';
+      render();
+    }
+  }
+
+  boot();
 })();

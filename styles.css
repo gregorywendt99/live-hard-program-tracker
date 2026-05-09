@@ -247,6 +247,293 @@ a:hover { text-decoration: underline; }
   [data-theme="auto"] .icon-btn .icon-moon { display: block; }
 }
 
+/* Boot loader
+   ========================================================================== */
+
+.boot {
+  min-height: 50vh;
+  display: grid;
+  place-items: center;
+  animation: fadeIn 0.3s var(--ease) both;
+}
+
+.boot-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: 2.5px solid var(--bg-tertiary);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Setup-needed screen
+   ========================================================================== */
+
+.setup {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 40px 4px 80px;
+  animation: fadeUp 0.5s var(--ease) both;
+}
+
+.setup-eyebrow {
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
+.setup-title {
+  font-size: clamp(32px, 5vw, 44px);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  margin: 0 0 16px;
+}
+
+.setup-body {
+  font-size: 17px;
+  color: var(--text-secondary);
+  margin: 0 0 32px;
+  line-height: 1.5;
+}
+
+.setup-steps {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.setup-steps li {
+  display: flex;
+  gap: 16px;
+  padding: 18px 20px;
+  background: var(--bg-elevated);
+  border-radius: var(--r-md);
+  border: 1px solid var(--separator);
+}
+
+.setup-step-num {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.setup-step-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  letter-spacing: -0.01em;
+}
+
+.setup-step-detail {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.setup-step-detail code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12.5px;
+  background: var(--bg-secondary);
+  padding: 1px 6px;
+  border-radius: 5px;
+  color: var(--text);
+}
+
+.setup-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Auth (login / signup) screen
+   ========================================================================== */
+
+.auth {
+  max-width: 380px;
+  margin: 0 auto;
+  padding: 40px 0 60px;
+  text-align: center;
+  animation: fadeUp 0.5s var(--ease) both;
+}
+
+.auth-mark {
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  background: var(--accent);
+  color: white;
+  display: grid;
+  place-items: center;
+  margin: 0 auto 24px;
+  box-shadow: 0 12px 32px var(--accent-soft-strong);
+}
+.auth-mark svg { width: 32px; height: 32px; }
+
+.auth-title {
+  font-size: 36px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin: 0 0 8px;
+}
+
+.auth-subtitle {
+  font-size: 16px;
+  color: var(--text-secondary);
+  margin: 0 0 32px;
+}
+
+.auth-tabs {
+  margin-bottom: 24px;
+}
+
+.auth-form {
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  padding: 0 4px;
+  letter-spacing: -0.01em;
+}
+
+.field input {
+  font-family: inherit;
+  font-size: 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1.5px solid var(--separator-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+  color-scheme: light dark;
+  width: 100%;
+}
+
+.field input:focus {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px var(--accent-soft);
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  padding: 0 4px;
+  margin-top: 2px;
+}
+
+.auth-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: center;
+  animation: fadeIn 0.2s var(--ease);
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.auth-link {
+  background: none;
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 500;
+  padding: 8px;
+  border-radius: 6px;
+  margin: 0 auto;
+  display: block;
+  transition: opacity 0.15s var(--ease);
+}
+.auth-link:hover { opacity: 0.7; }
+
+.auth-fineprint {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin: 32px 0 0;
+}
+
+/* Account row in settings
+   ========================================================================== */
+
+.account-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--r-md);
+  margin-bottom: 8px;
+}
+
+.account-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: white;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 700;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.account-meta { flex: 1; min-width: 0; }
+.account-email {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.account-status {
+  font-size: 12px;
+  color: var(--success);
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.account-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
 /* Welcome / onboarding
    ========================================================================== */
 
