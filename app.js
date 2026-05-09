@@ -85,6 +85,7 @@
   let useLocalOnly = false;
   let unsubFirestore = null;
   let saveDebounceTimer = null;
+  let initialLoadDone = false;
   let authMode = 'signin';
 
   /* ----- State management --------------------------------------------- */
@@ -133,12 +134,18 @@
 
   function saveState() {
     saveStateLocal();
-    if (currentUser && !useLocalOnly && firestore) {
+    // Only sync to Firestore once the initial load has finished. Otherwise a
+    // user action (e.g. tapping a theme button) during the boot window would
+    // overwrite the user's remote document with the empty default state.
+    if (currentUser && !useLocalOnly && firestore && initialLoadDone) {
       saveStateRemote();
     }
   }
 
   function saveStateRemote() {
+    // Belt-and-suspenders: never push a state with no journey data. If we
+    // somehow reach here with defaultState, just bail.
+    if (!state.startDate && !state.currentPhase) return;
     clearTimeout(saveDebounceTimer);
     saveDebounceTimer = setTimeout(async () => {
       try {
@@ -796,18 +803,22 @@
   function onAuth(user) {
     if (user) {
       currentUser = user;
+      initialLoadDone = false; // hold remote saves until we've loaded
       loadFromFirestore().then(() => {
         listenToFirestore();
+        initialLoadDone = true;
         appPhase = 'app';
         render();
       }).catch((e) => {
         console.error('Firestore load failed', e);
         state = loadStateLocal();
+        initialLoadDone = true;
         appPhase = 'app';
         render();
       });
     } else {
       currentUser = null;
+      initialLoadDone = false;
       if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
       state = defaultState();
       appPhase = 'auth';
@@ -872,6 +883,12 @@
       if (snap.metadata.hasPendingWrites) return;
       const data = snap.data();
       if (!data || data.version !== STATE_VERSION) return;
+      // Defense: never accept a snapshot that would erase a journey we
+      // already have locally — protects against stale or empty remote writes.
+      if (state.startDate && !data.startDate) {
+        console.warn('Ignoring Firestore snapshot — would erase startDate');
+        return;
+      }
       const def = defaultState();
       state = { ...def, ...data, days: { ...def.days, ...(data.days || {}) }, settings: { ...def.settings, ...(data.settings || {}) } };
       saveStateLocal();
