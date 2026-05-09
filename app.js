@@ -41,10 +41,10 @@
   };
 
   const PHASES = {
-    '75hard': { id: '75hard', name: '75 HARD', duration: 75, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'] },
-    phase1: { id: 'phase1', name: 'Phase 1', duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'visualization'] },
-    phase2: { id: 'phase2', name: 'Phase 2', duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'] },
-    phase3: { id: 'phase3', name: 'Phase 3', duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'stranger', 'kindness'] },
+    '75hard': { id: '75hard', name: '75 HARD', stage: 1, duration: 75, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'] },
+    phase1:   { id: 'phase1',   name: 'Phase 1', stage: 2, duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'visualization'] },
+    phase2:   { id: 'phase2',   name: 'Phase 2', stage: 3, duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo'] },
+    phase3:   { id: 'phase3',   name: 'Phase 3', stage: 4, duration: 30, tasks: ['water', 'reading', 'workout1', 'workout2', 'diet', 'photo', 'coldShower', 'powerList', 'stranger', 'kindness'] },
   };
   const PHASE_ORDER = ['75hard', 'phase1', 'phase2', 'phase3'];
 
@@ -60,6 +60,20 @@
   const daysBetween = (iso1, iso2) => Math.round((dateFromISO(iso2) - dateFromISO(iso1)) / 86400000);
   const formatDate = (iso) => dateFromISO(iso).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
   const formatShortDate = (iso) => dateFromISO(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const formatFullDate = (iso) => dateFromISO(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  const addYears = (iso, n) => {
+    const d = dateFromISO(iso);
+    d.setFullYear(d.getFullYear() + n);
+    return isoFromDate(d);
+  };
+  const formatDateRange = (startISO, endISO) => {
+    const sd = dateFromISO(startISO);
+    const ed = dateFromISO(endISO);
+    if (sd.getFullYear() === ed.getFullYear()) {
+      return `${formatShortDate(startISO)} → ${formatShortDate(endISO)}, ${ed.getFullYear()}`;
+    }
+    return `${formatFullDate(startISO)} → ${formatFullDate(endISO)}`;
+  };
 
   /* ----- App phase + auth state --------------------------------------- */
 
@@ -169,7 +183,45 @@
     return phase ? completedDaysCount(phaseId) === phase.duration : false;
   }
   function yearDeadlineISO() {
-    return state.startDate ? addDays(state.startDate, 365) : null;
+    return state.startDate ? addYears(state.startDate, 1) : null;
+  }
+
+  // Latest date a stage can start so the entire LIVEHARD program still fits
+  // within one year. Working backward from the anniversary:
+  //   Phase 3 ends on the anniversary, so it must start anniversary − 29
+  //   Phase 2 ends the day before Phase 3 starts → start = phase3Start − 30
+  //   30-day mandatory rest sits between Phase 1 end and Phase 2 start
+  //   Phase 1 ends 30 days before Phase 2 starts → start = phase2Start − 59
+  function getStageLatestStart(stageId) {
+    if (!state.startDate) return null;
+    const yearDeadline = yearDeadlineISO();
+    const phase3Start = addDays(yearDeadline, -29);
+    const phase2Start = addDays(phase3Start, -30);
+    const phase1Start = addDays(phase2Start, -59);
+    switch (stageId) {
+      case '75hard': return state.startDate;
+      case 'phase1': return phase1Start;
+      case 'phase2': return phase2Start;
+      case 'phase3': return phase3Start;
+      default: return null;
+    }
+  }
+
+  function getStageDateLine(id) {
+    if (!state.startDate) return '';
+    const phase = PHASES[id];
+    const isActive = state.currentPhase === id;
+    const isDone = isPhaseComplete(id);
+
+    if (isActive && state.phaseStartDate) {
+      const start = state.phaseStartDate;
+      const end = addDays(start, phase.duration - 1);
+      return formatDateRange(start, end);
+    }
+    if (isDone) return 'Completed';
+    if (id === '75hard') return `Started ${formatFullDate(state.startDate)}`;
+    const latest = getStageLatestStart(id);
+    return latest ? `Start by ${formatFullDate(latest)}` : '';
   }
 
   /* ----- DOM refs ----------------------------------------------------- */
@@ -318,7 +370,9 @@
     const deadline = yearDeadlineISO();
     if (deadline) {
       const remain = daysBetween(todayISO(), deadline);
-      el.yearDeadline.textContent = remain >= 0 ? `${remain} days until year deadline` : `${-remain} days past deadline`;
+      el.yearDeadline.textContent = remain >= 0
+        ? `${remain} days · ends ${formatFullDate(deadline)}`
+        : `${-remain} days past ${formatFullDate(deadline)}`;
     }
   }
 
@@ -390,7 +444,7 @@
   }
 
   function renderJourney() {
-    el.journey.innerHTML = PHASE_ORDER.map((id, idx) => {
+    el.journey.innerHTML = PHASE_ORDER.map((id) => {
       const phase = PHASES[id];
       const completed = completedDaysCount(id);
       const isActive = state.currentPhase === id;
@@ -400,15 +454,20 @@
       if (isDone) cls.push('complete');
       const pct = (completed / phase.duration) * 100;
       const stateText = isDone ? 'Done' : isActive ? `${completed} / ${phase.duration}` : completed > 0 ? `${completed} / ${phase.duration}` : 'Locked';
+      const dateLine = getStageDateLine(id);
       return `
         <div class="${cls.join(' ')}">
-          <div class="phase-num">${idx + 1}</div>
+          <div class="phase-num">${phase.stage}</div>
           <div class="phase-info">
+            <div class="phase-eyebrow">Stage ${phase.stage}</div>
             <div class="phase-name">${phase.name}</div>
             <div class="phase-meta">${phase.duration} days · ${phase.tasks.length} daily tasks</div>
+            ${dateLine ? `<div class="phase-dates">${dateLine}</div>` : ''}
           </div>
-          <div class="phase-bar"><div class="phase-bar-fill" style="width:${pct}%"></div></div>
-          <div class="phase-state">${stateText}</div>
+          <div class="phase-progress-col">
+            <div class="phase-state">${stateText}</div>
+            <div class="phase-bar"><div class="phase-bar-fill" style="width:${pct}%"></div></div>
+          </div>
         </div>`;
     }).join('');
   }
