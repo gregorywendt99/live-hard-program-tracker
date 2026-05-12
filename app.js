@@ -105,7 +105,8 @@
     days: { '75hard': {}, phase1: {}, phase2: {}, phase3: {} },
     settings: { theme: 'auto' },
     waterCustomAmounts: [],
-    photos: {}, // { [journeyDay: number 1-indexed]: { uploadedAt: string } }
+    photos: {}, // { [journeyDay: number 1-indexed]: { uploadedAt: string, alignment?: { p1, p2 } } }
+    photoAlignmentRef: { r1: { x: 0.5, y: 0.30 }, r2: { x: 0.5, y: 0.70 } },
   });
 
   let state = defaultState();
@@ -303,6 +304,21 @@
     photoProgressLabel: $('#photoProgressLabel'),
     photoPrevBtn: $('#photoPrevBtn'),
     photoNextBtn: $('#photoNextBtn'),
+    photoSheetActions: $('#photoSheetActions'),
+    photoAlignBtn: $('#photoAlignBtn'),
+    photoAlignStage: $('#photoAlignStage'),
+    photoAlignActions: $('#photoAlignActions'),
+    photoAlignCanvas: $('#photoAlignCanvas'),
+    photoAlignImg: $('#photoAlignImg'),
+    photoAlignPin1: $('#photoAlignPin1'),
+    photoAlignPin2: $('#photoAlignPin2'),
+    photoAlignTarget1: $('#photoAlignTarget1'),
+    photoAlignTarget2: $('#photoAlignTarget2'),
+    photoAlignHint: $('#photoAlignHint'),
+    photoAlignRotateSlider: $('#photoAlignRotateSlider'),
+    photoAlignZoomSlider: $('#photoAlignZoomSlider'),
+    photoAlignCalibrate: $('#photoAlignCalibrate'),
+    photoAlignSaveBtn: $('#photoAlignSaveBtn'),
     photosCard: $('#photosCard'),
     photosStage: $('#photosStage'),
     photosImage: $('#photosImage'),
@@ -850,6 +866,8 @@
 
     const has = state.photos && state.photos[dayNum];
     el.photoRemoveBtn.hidden = !has;
+    el.photoAlignBtn.hidden = !has;
+    el.photoAlignBtn.textContent = has?.alignment ? 'Re-align this photo' : 'Align this photo';
     el.photoPickBtn.textContent = has ? 'Replace photo' : 'Choose photo';
 
     if (has) {
@@ -872,6 +890,320 @@
           <span>No photo for this day yet</span>
         </div>`;
     }
+  }
+
+  /* ----- Photo alignment ------------------------------------------------ */
+
+  // alignState shape:
+  //   { day, pins: [{x,y}|null, {x,y}|null], transform: {tx,ty,scale,rotate},
+  //     isCalibrating: bool, drag: any }
+  // pins are in normalized photo-untransformed coords (0..1 of canvas).
+  // transform is applied around the canvas center (rotate + scale) then a free
+  // translate (tx,ty). Reference is stored in state.photoAlignmentRef as r1, r2
+  // in normalized canvas coords.
+  let alignState = null;
+
+  function defaultRef() {
+    return state.photoAlignmentRef || { r1: { x: 0.5, y: 0.3 }, r2: { x: 0.5, y: 0.7 } };
+  }
+
+  function transformPoint(p, t, W, H) {
+    const px = p.x * W;
+    const py = p.y * H;
+    const cx = W / 2;
+    const cy = H / 2;
+    const dx = px - cx;
+    const dy = py - cy;
+    const cos = Math.cos(t.rotate);
+    const sin = Math.sin(t.rotate);
+    const rx = (dx * cos - dy * sin) * t.scale;
+    const ry = (dx * sin + dy * cos) * t.scale;
+    return { x: rx + cx + t.tx, y: ry + cy + t.ty };
+  }
+
+  function inverseTransformPoint(cp, t, W, H) {
+    const cx = W / 2;
+    const cy = H / 2;
+    let dx = (cp.x - cx - t.tx) / t.scale;
+    let dy = (cp.y - cy - t.ty) / t.scale;
+    const cos = Math.cos(-t.rotate);
+    const sin = Math.sin(-t.rotate);
+    const rx = dx * cos - dy * sin;
+    const ry = dx * sin + dy * cos;
+    return { x: (rx + cx) / W, y: (ry + cy) / H };
+  }
+
+  // Given source pins p1, p2 (photo-normalized) and target ref r1, r2
+  // (canvas-normalized), build the transform that, when used by transformPoint,
+  // sends p1 → r1 and p2 → r2.
+  function computeAutoTransform(p1, p2, r1, r2, W, H) {
+    const s1x = p1.x * W, s1y = p1.y * H;
+    const s2x = p2.x * W, s2y = p2.y * H;
+    const t1x = r1.x * W, t1y = r1.y * H;
+    const t2x = r2.x * W, t2y = r2.y * H;
+    const dsx = s2x - s1x, dsy = s2y - s1y;
+    const dtx = t2x - t1x, dty = t2y - t1y;
+    const srcLen = Math.hypot(dsx, dsy);
+    if (srcLen < 0.5) return null;
+    const tarLen = Math.hypot(dtx, dty);
+    const scale = tarLen / srcLen;
+    const angle = Math.atan2(dty, dtx) - Math.atan2(dsy, dsx);
+    const cx = W / 2, cy = H / 2;
+    const cos = Math.cos(angle) * scale;
+    const sin = Math.sin(angle) * scale;
+    const rx = cos * (s1x - cx) - sin * (s1y - cy);
+    const ry = sin * (s1x - cx) + cos * (s1y - cy);
+    return { tx: t1x - cx - rx, ty: t1y - cy - ry, scale, rotate: angle };
+  }
+
+  // For the carousel: build a CSS matrix string that bakes everything in.
+  function alignmentMatrixCSS(alignment, ref, W, H) {
+    if (!alignment || !alignment.p1 || !alignment.p2 || !ref) return '';
+    const t = computeAutoTransform(alignment.p1, alignment.p2, ref.r1, ref.r2, W, H);
+    if (!t) return '';
+    const cx = W / 2, cy = H / 2;
+    const cos = Math.cos(t.rotate) * t.scale;
+    const sin = Math.sin(t.rotate) * t.scale;
+    const a = cos, b = sin, c = -sin, d = cos;
+    const e = t.tx + cx - cos * cx + sin * cy;
+    const f = t.ty + cy - sin * cx - cos * cy;
+    return `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`;
+  }
+
+  function openAlignView() {
+    if (!photoSheetDay) return;
+    if (!state.photos?.[photoSheetDay]) {
+      showToast('Upload a photo for this day first.');
+      return;
+    }
+    const existing = state.photos[photoSheetDay].alignment;
+    alignState = {
+      day: photoSheetDay,
+      pins: existing ? [{ ...existing.p1 }, { ...existing.p2 }] : [null, null],
+      transform: { tx: 0, ty: 0, scale: 1, rotate: 0 },
+      isCalibrating: false,
+      drag: null,
+    };
+    el.photoAlignStage.hidden = false;
+    el.photoAlignActions.hidden = false;
+    el.photoSheetActions.style.display = 'none';
+    el.photoPreview.style.display = 'none';
+    el.photoAlignCalibrate.checked = false;
+    el.photoAlignRotateSlider.value = 0;
+    el.photoAlignZoomSlider.value = 1;
+
+    fetchPhotoURL(photoSheetDay).then((url) => {
+      if (url) el.photoAlignImg.src = url;
+      // If both pins are set, auto-align to current ref.
+      if (alignState && alignState.pins[0] && alignState.pins[1]) {
+        autoAlignToReference();
+      }
+      renderAlignView();
+    });
+
+    renderAlignView();
+  }
+
+  function closeAlignView() {
+    alignState = null;
+    el.photoAlignStage.hidden = true;
+    el.photoAlignActions.hidden = true;
+    el.photoSheetActions.style.display = '';
+    el.photoPreview.style.display = '';
+  }
+
+  function renderAlignView() {
+    if (!alignState) return;
+    const W = el.photoAlignCanvas.clientWidth;
+    const H = el.photoAlignCanvas.clientHeight;
+    const { pins, transform, isCalibrating } = alignState;
+    const ref = defaultRef();
+
+    // Position the targets (where pins should land)
+    el.photoAlignTarget1.style.left = `${ref.r1.x * W}px`;
+    el.photoAlignTarget1.style.top = `${ref.r1.y * H}px`;
+    el.photoAlignTarget2.style.left = `${ref.r2.x * W}px`;
+    el.photoAlignTarget2.style.top = `${ref.r2.y * H}px`;
+    el.photoAlignTarget1.style.display = isCalibrating ? 'none' : '';
+    el.photoAlignTarget2.style.display = isCalibrating ? 'none' : '';
+
+    // Image transform — rotate/scale around canvas center, then translate
+    el.photoAlignImg.style.transform =
+      `translate(${transform.tx}px, ${transform.ty}px) ` +
+      `translate(${W / 2}px, ${H / 2}px) ` +
+      `rotate(${transform.rotate}rad) scale(${transform.scale}) ` +
+      `translate(${-W / 2}px, ${-H / 2}px)`;
+
+    // Pins follow the photo
+    const p1Pos = pins[0] ? transformPoint(pins[0], transform, W, H) : null;
+    const p2Pos = pins[1] ? transformPoint(pins[1], transform, W, H) : null;
+    if (p1Pos) {
+      el.photoAlignPin1.style.left = `${p1Pos.x}px`;
+      el.photoAlignPin1.style.top = `${p1Pos.y}px`;
+      el.photoAlignPin1.classList.remove('placeholder');
+    } else {
+      el.photoAlignPin1.classList.add('placeholder');
+    }
+    if (p2Pos) {
+      el.photoAlignPin2.style.left = `${p2Pos.x}px`;
+      el.photoAlignPin2.style.top = `${p2Pos.y}px`;
+      el.photoAlignPin2.classList.remove('placeholder');
+    } else {
+      el.photoAlignPin2.classList.add('placeholder');
+    }
+
+    // Hint text
+    if (!pins[0]) el.photoAlignHint.textContent = 'Tap a landmark to place Pin 1';
+    else if (!pins[1]) el.photoAlignHint.textContent = 'Tap a second landmark for Pin 2';
+    else if (isCalibrating) el.photoAlignHint.textContent = 'Drag, zoom or rotate to frame';
+    else el.photoAlignHint.textContent = 'Tap a pin and re-tap to move it';
+
+    el.photoAlignSaveBtn.textContent = isCalibrating ? 'Set as reference' : 'Save alignment';
+  }
+
+  function placeOrMovePin(cx, cy) {
+    if (!alignState) return;
+    const W = el.photoAlignCanvas.clientWidth;
+    const H = el.photoAlignCanvas.clientHeight;
+    const photoPos = inverseTransformPoint({ x: cx, y: cy }, alignState.transform, W, H);
+    photoPos.x = Math.max(0, Math.min(1, photoPos.x));
+    photoPos.y = Math.max(0, Math.min(1, photoPos.y));
+    if (!alignState.pins[0]) {
+      alignState.pins[0] = photoPos;
+    } else if (!alignState.pins[1]) {
+      alignState.pins[1] = photoPos;
+      // Auto-align as soon as both pins are placed (when NOT calibrating)
+      if (!alignState.isCalibrating) autoAlignToReference();
+    } else {
+      // Both placed — move the nearest one
+      const p1Canvas = transformPoint(alignState.pins[0], alignState.transform, W, H);
+      const p2Canvas = transformPoint(alignState.pins[1], alignState.transform, W, H);
+      const d1 = Math.hypot(cx - p1Canvas.x, cy - p1Canvas.y);
+      const d2 = Math.hypot(cx - p2Canvas.x, cy - p2Canvas.y);
+      if (d1 < d2) alignState.pins[0] = photoPos;
+      else alignState.pins[1] = photoPos;
+      if (!alignState.isCalibrating) autoAlignToReference();
+    }
+    renderAlignView();
+  }
+
+  function autoAlignToReference() {
+    if (!alignState) return;
+    const { pins } = alignState;
+    if (!pins[0] || !pins[1]) return;
+    const W = el.photoAlignCanvas.clientWidth;
+    const H = el.photoAlignCanvas.clientHeight;
+    const ref = defaultRef();
+    const t = computeAutoTransform(pins[0], pins[1], ref.r1, ref.r2, W, H);
+    if (!t) return;
+    alignState.transform = t;
+    el.photoAlignRotateSlider.value = t.rotate * 180 / Math.PI;
+    el.photoAlignZoomSlider.value = Math.max(0.5, Math.min(3, t.scale));
+  }
+
+  function onAlignSlider() {
+    if (!alignState || !alignState.isCalibrating) return;
+    const rotDeg = parseFloat(el.photoAlignRotateSlider.value);
+    const zoom = parseFloat(el.photoAlignZoomSlider.value);
+    alignState.transform.rotate = rotDeg * Math.PI / 180;
+    alignState.transform.scale = zoom;
+    renderAlignView();
+  }
+
+  function onAlignCalibrateToggle() {
+    if (!alignState) return;
+    alignState.isCalibrating = el.photoAlignCalibrate.checked;
+    if (!alignState.isCalibrating && alignState.pins[0] && alignState.pins[1]) {
+      autoAlignToReference();
+    }
+    renderAlignView();
+  }
+
+  function savePhotoAlignment() {
+    if (!alignState) return;
+    const { day, pins, isCalibrating, transform } = alignState;
+    if (!pins[0] || !pins[1]) {
+      showToast('Place both pins first.');
+      return;
+    }
+    if (!state.photos[day]) {
+      state.photos[day] = { uploadedAt: new Date().toISOString() };
+    }
+    state.photos[day].alignment = { p1: { ...pins[0] }, p2: { ...pins[1] } };
+
+    if (isCalibrating) {
+      const W = el.photoAlignCanvas.clientWidth;
+      const H = el.photoAlignCanvas.clientHeight;
+      const p1Canvas = transformPoint(pins[0], transform, W, H);
+      const p2Canvas = transformPoint(pins[1], transform, W, H);
+      state.photoAlignmentRef = {
+        r1: { x: p1Canvas.x / W, y: p1Canvas.y / H },
+        r2: { x: p2Canvas.x / W, y: p2Canvas.y / H },
+      };
+      showToast('Reference updated. All photos will re-align.');
+    } else {
+      showToast('Alignment saved.');
+    }
+
+    saveState();
+    closeAlignView();
+    renderPhotoSheet();
+    restartPhotoCarousel();
+  }
+
+  function setupAlignGestures() {
+    const canvas = el.photoAlignCanvas;
+    let drag = null;
+    const MOVE_THRESHOLD = 6;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (!alignState) return;
+      try { canvas.setPointerCapture(e.pointerId); } catch {}
+      drag = {
+        type: 'pending',
+        startX: e.clientX, startY: e.clientY,
+        origTransform: { ...alignState.transform },
+      };
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      if (!drag || !alignState) return;
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (drag.type === 'pending' && Math.hypot(dx, dy) > MOVE_THRESHOLD) {
+        const canPan = alignState.pins[0] && alignState.pins[1] && alignState.isCalibrating;
+        drag.type = canPan ? 'pan' : 'consumed';
+      }
+      if (drag.type === 'pan') {
+        alignState.transform.tx = drag.origTransform.tx + dx;
+        alignState.transform.ty = drag.origTransform.ty + dy;
+        renderAlignView();
+      }
+    });
+
+    canvas.addEventListener('pointerup', (e) => {
+      if (!drag) return;
+      try { canvas.releasePointerCapture(e.pointerId); } catch {}
+      const isTap = drag.type === 'pending';
+      drag = null;
+      if (isTap) {
+        const rect = canvas.getBoundingClientRect();
+        placeOrMovePin(e.clientX - rect.left, e.clientY - rect.top);
+      }
+    });
+
+    canvas.addEventListener('pointercancel', () => { drag = null; });
+
+    // Mouse wheel for zoom while calibrating
+    canvas.addEventListener('wheel', (e) => {
+      if (!alignState || !alignState.isCalibrating) return;
+      e.preventDefault();
+      const delta = -e.deltaY * 0.0015;
+      const next = Math.max(0.5, Math.min(3, alignState.transform.scale * (1 + delta)));
+      alignState.transform.scale = next;
+      el.photoAlignZoomSlider.value = next;
+      renderAlignView();
+    }, { passive: false });
   }
 
   /* ----- Photo carousel ------------------------------------------------ */
@@ -927,9 +1259,16 @@
     const url = await fetchPhotoURL(day);
     if (!url) return;
     await preloadImage(url);
+    const alignment = state.photos?.[day]?.alignment;
+    const ref = defaultRef();
+    const W = el.photosImageWrap.clientWidth;
+    const H = el.photosImageWrap.clientHeight;
+    const transformStr = alignment ? alignmentMatrixCSS(alignment, ref, W, H) : '';
     el.photosImage.classList.remove('shown');
     requestAnimationFrame(() => {
       el.photosImage.src = url;
+      el.photosImage.style.transformOrigin = '0 0';
+      el.photosImage.style.transform = transformStr;
       el.photosImageWrap.classList.add('has-photo');
       el.photosDayTag.textContent = `Day ${day}`;
       requestAnimationFrame(() => el.photosImage.classList.add('shown'));
@@ -1459,7 +1798,8 @@
       case 'reset-water-today': resetWaterToday(); break;
       case 'open-photo': openPhotoSheet(); break;
       case 'close-photo':
-        if (!photoUploadInProgress) closePhotoSheet();
+        if (alignState) closeAlignView();
+        else if (!photoUploadInProgress) closePhotoSheet();
         break;
       case 'pick-photo': el.photoInput.click(); break;
       case 'remove-photo':
@@ -1479,6 +1819,9 @@
         }
         break;
       }
+      case 'open-align': openAlignView(); break;
+      case 'photo-align-cancel': closeAlignView(); break;
+      case 'photo-align-save': savePhotoAlignment(); break;
       case 'select-photo-day': {
         const d = Number(t.dataset.day);
         if (!d) break;
@@ -1530,6 +1873,12 @@
     e.target.value = '';
   });
 
+  // Photo alignment sliders + calibrate toggle + gestures
+  el.photoAlignRotateSlider.addEventListener('input', onAlignSlider);
+  el.photoAlignZoomSlider.addEventListener('input', onAlignSlider);
+  el.photoAlignCalibrate.addEventListener('change', onAlignCalibrateToggle);
+  setupAlignGestures();
+
   // Start date
   el.startDateInput.addEventListener('change', (e) => changeStartDate(e.target.value));
 
@@ -1544,6 +1893,7 @@
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       if (el.confirmModal.getAttribute('aria-hidden') === 'false') closeConfirm();
+      else if (alignState) closeAlignView();
       else if (el.waterSheet.getAttribute('aria-hidden') === 'false') closeWaterSheet();
       else if (el.photoSheet.getAttribute('aria-hidden') === 'false' && !photoUploadInProgress) closePhotoSheet();
       else if (el.settingsSheet.getAttribute('aria-hidden') === 'false') closeSettings();
