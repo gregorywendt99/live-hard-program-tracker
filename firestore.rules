@@ -3,12 +3,12 @@ rules_version = '2';
 // Live Hard Tracker — Firestore security rules
 // Paste this entire file into: Firebase Console → Firestore Database → Rules → Publish
 //
-// Each user can only read/write their own document under /users/{uid}.
-// No other access is allowed.
+// Each user owns everything under /users/{uid}, including subcollections
+// like /users/{uid}/photos/{day}. No other access is allowed.
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /users/{userId} {
+    match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }

@@ -81,13 +81,12 @@
   let firebaseApp = null;
   let firebaseAuth = null;
   let firestore = null;
-  let storage = null;
   let currentUser = null;
   let useLocalOnly = false;
   let unsubFirestore = null;
   let saveDebounceTimer = null;
   let initialLoadDone = false;
-  const photoUrlCache = new Map();
+  const photoDataCache = new Map(); // dayNum -> data URL string
   let photoSheetDay = null;
   let photoUploadInProgress = false;
   let authMode = 'signin';
@@ -639,8 +638,14 @@
 
   /* ----- Photos --------------------------------------------------------- */
 
-  const PHOTO_MAX_DIM = 1400;
-  const PHOTO_QUALITY = 0.85;
+  // Photos are stored as data URLs in /users/{uid}/photos/{dayNum}. To stay
+  // comfortably under Firestore's 1 MB per-document limit, photos are
+  // compressed before encoding: 1200px long edge, JPEG quality 0.75 —
+  // typical iPhone photos land around 200-300 KB encoded, ~270-400 KB as
+  // base64.
+  const PHOTO_MAX_DIM = 1200;
+  const PHOTO_QUALITY = 0.75;
+  const PHOTO_MAX_BYTES = 900 * 1024; // leave headroom under 1 MB doc cap
 
   function journeyDayForToday() {
     if (!state.startDate) return null;
@@ -669,11 +674,11 @@
     return null;
   }
 
-  function compressImage(file) {
+  function compressImageToDataURL(file) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
-      img.onload = () => {
+      img.onload = async () => {
         URL.revokeObjectURL(url);
         let { width, height } = img;
         const longer = Math.max(width, height);
@@ -686,31 +691,46 @@
         canvas.width = width;
         canvas.height = height;
         canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-        canvas.toBlob(
-          (blob) => blob ? resolve(blob) : reject(new Error('Compression failed')),
-          'image/jpeg',
-          PHOTO_QUALITY
-        );
+
+        // Try the chosen quality first; if the encoded blob is too large,
+        // drop quality stepwise until it fits.
+        const qualities = [PHOTO_QUALITY, 0.65, 0.55, 0.45, 0.35];
+        for (const q of qualities) {
+          const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
+          if (!blob) continue;
+          if (blob.size <= PHOTO_MAX_BYTES) {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('Read failed'));
+            reader.readAsDataURL(blob);
+            return;
+          }
+        }
+        reject(new Error('Image is too large even after compression'));
       };
       img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
       img.src = url;
     });
   }
 
-  function photoRef(dayNum) {
-    if (!storage || !currentUser) return null;
-    return storage.ref(`users/${currentUser.uid}/photos/day${dayNum}.jpg`);
+  function photoDocRef(dayNum) {
+    if (!firestore || !currentUser) return null;
+    return firestore.collection('users').doc(currentUser.uid).collection('photos').doc(String(dayNum));
   }
 
   async function fetchPhotoURL(dayNum) {
-    if (photoUrlCache.has(dayNum)) return photoUrlCache.get(dayNum);
-    const ref = photoRef(dayNum);
+    if (photoDataCache.has(dayNum)) return photoDataCache.get(dayNum);
+    const ref = photoDocRef(dayNum);
     if (!ref) return null;
     try {
-      const url = await ref.getDownloadURL();
-      photoUrlCache.set(dayNum, url);
-      return url;
-    } catch {
+      const snap = await ref.get();
+      if (!snap.exists) return null;
+      const data = snap.data()?.data;
+      if (!data) return null;
+      photoDataCache.set(dayNum, data);
+      return data;
+    } catch (e) {
+      console.error('Photo fetch failed', e);
       return null;
     }
   }
@@ -725,42 +745,34 @@
   }
 
   async function uploadPhotoForDay(dayNum, file) {
-    if (!storage || !currentUser) {
-      showToast('Photos need Firebase Storage configured.');
+    if (!firestore || !currentUser) {
+      showToast('Sign in first to save photos.');
       return;
     }
     photoUploadInProgress = true;
     el.photoPickBtn.disabled = true;
     el.photoRemoveBtn.hidden = true;
     el.photoProgress.hidden = false;
-    el.photoProgressFill.style.width = '8%';
+    el.photoProgressFill.style.width = '20%';
     el.photoProgressLabel.textContent = 'Compressing…';
 
     try {
-      const blob = await compressImage(file);
-      el.photoProgressFill.style.width = '20%';
-      el.photoProgressLabel.textContent = 'Uploading…';
+      const dataUrl = await compressImageToDataURL(file);
+      el.photoProgressFill.style.width = '70%';
+      el.photoProgressLabel.textContent = 'Saving…';
 
-      const ref = photoRef(dayNum);
-      const task = ref.put(blob, { contentType: 'image/jpeg' });
-      await new Promise((resolve, reject) => {
-        task.on('state_changed', (snap) => {
-          const pct = 20 + (snap.bytesTransferred / snap.totalBytes) * 75;
-          el.photoProgressFill.style.width = `${pct}%`;
-        }, reject, resolve);
+      await photoDocRef(dayNum).set({
+        data: dataUrl,
+        uploadedAt: new Date().toISOString(),
       });
 
       el.photoProgressFill.style.width = '100%';
       el.photoProgressLabel.textContent = 'Done';
+      photoDataCache.set(dayNum, dataUrl);
 
-      const url = await ref.getDownloadURL();
-      photoUrlCache.set(dayNum, url);
-
-      // Record in state
       if (!state.photos) state.photos = {};
       state.photos[dayNum] = { uploadedAt: new Date().toISOString() };
 
-      // Auto-check today's photo task if this is today's photo
       const todayDay = journeyDayForToday();
       if (dayNum === todayDay) {
         const target = phaseDayFromJourneyDay(dayNum);
@@ -779,14 +791,7 @@
       showToast(`Day ${dayNum} photo saved.`);
     } catch (e) {
       console.error('Photo upload failed', e);
-      const code = e?.code || '';
-      if (code === 'storage/unauthorized') {
-        showToast('Storage rules block this upload — check Firebase Storage Rules.');
-      } else if (code === 'storage/retry-limit-exceeded') {
-        showToast('Upload timed out. Try again.');
-      } else {
-        showToast('Upload failed — try a smaller image.');
-      }
+      showToast(e?.message || 'Could not save that photo.');
     } finally {
       photoUploadInProgress = false;
       el.photoPickBtn.disabled = false;
@@ -794,16 +799,16 @@
     }
   }
 
-  async function removePhotoForDay(dayNum) {
+  function removePhotoForDay(dayNum) {
     askConfirm({
       title: `Remove Day ${dayNum} photo?`,
-      body: 'This permanently deletes the photo from your storage.',
+      body: 'This permanently deletes the photo from your account.',
       onConfirm: async () => {
         try {
-          const ref = photoRef(dayNum);
+          const ref = photoDocRef(dayNum);
           if (ref) await ref.delete();
         } catch (e) { console.warn('Delete failed (may not exist)', e); }
-        photoUrlCache.delete(dayNum);
+        photoDataCache.delete(dayNum);
         if (state.photos) delete state.photos[dayNum];
         saveState();
         renderPhotoSheet();
@@ -989,7 +994,7 @@
   }
 
   function restartPhotoCarousel() {
-    if (!state.startDate || !storage || !currentUser) {
+    if (!state.startDate || !firestore || !currentUser) {
       clearCarousel();
       el.photosImageWrap?.classList.remove('has-photo');
       el.photosImage?.classList.remove('shown');
@@ -1192,7 +1197,6 @@
     firebaseApp = firebase.initializeApp(window.firebaseConfig);
     firebaseAuth = firebase.auth();
     firestore = firebase.firestore();
-    if (firebase.storage) storage = firebase.storage();
     firebaseAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
     firestore.enablePersistence({ synchronizeTabs: true }).catch(() => {});
   }
@@ -1218,7 +1222,7 @@
       initialLoadDone = false;
       if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
       clearCarousel();
-      photoUrlCache.clear();
+      photoDataCache.clear();
       state = defaultState();
       appPhase = 'auth';
       render();
