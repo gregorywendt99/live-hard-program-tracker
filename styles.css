@@ -1503,9 +1503,16 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 
 .photos-stage {
   display: grid;
-  grid-template-columns: 1fr 88px;
-  gap: 14px;
+  grid-template-columns: 1fr 78px;
+  gap: 12px;
   align-items: stretch;
+}
+
+@media (min-width: 720px) {
+  .photos-stage {
+    grid-template-columns: minmax(280px, 380px) 1fr;
+    gap: 20px;
+  }
 }
 
 .photos-image-wrap {
@@ -1561,10 +1568,66 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 .photos-image-wrap.has-photo .photos-day-tag { opacity: 1; }
 
+.photos-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.photos-summary {
+  display: none;
+}
+
+@media (min-width: 720px) {
+  .photos-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 20px 22px;
+    background: var(--bg-secondary);
+    border-radius: var(--r-md);
+    flex-shrink: 0;
+  }
+}
+
+.photos-summary-day {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+
+.photos-summary-date {
+  font-size: 14px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  margin-top: 2px;
+}
+
+.photos-summary-phase {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin-top: 10px;
+}
+
+.photos-summary-stats {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--separator);
+  font-variant-numeric: tabular-nums;
+}
+
 .photos-rail {
   position: relative;
-  height: 100%;
-  max-height: 100%;
+  flex: 1;
+  min-height: 120px;
   background: var(--bg-secondary);
   border-radius: var(--r-md);
   overflow: hidden;
@@ -1607,29 +1670,76 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   background: transparent;
   border: 0;
   cursor: pointer;
-  transition: color 0.2s var(--ease), transform 0.2s var(--ease-spring);
+  transition: color 0.2s var(--ease), background 0.18s var(--ease), transform 0.2s var(--ease-spring);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1px;
+  gap: 4px;
   line-height: 1.1;
 }
 
 .photos-day-item .photos-day-num { font-size: 15px; font-weight: 700; }
-.photos-day-item .photos-day-tiny { font-size: 10px; color: var(--text-tertiary); font-weight: 500; }
+
+.photos-day-date {
+  display: none;
+}
+
+.photos-day-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  opacity: 0.35;
+}
 
 .photos-day-item.has-photo { color: var(--text-secondary); }
-.photos-day-item.has-photo .photos-day-tiny { color: var(--accent); }
-
+.photos-day-item.has-photo .photos-day-dot { background: var(--accent); opacity: 1; }
 .photos-day-item.active {
   color: var(--accent);
   transform: scale(1.08);
 }
-.photos-day-item.active .photos-day-tiny { color: var(--accent); }
+.photos-day-item.active .photos-day-dot { background: var(--accent); opacity: 1; }
 
 @media (max-width: 540px) {
-  .photos-stage { grid-template-columns: 1fr 72px; gap: 10px; }
+  .photos-stage { gap: 10px; }
   .photos-day-item .photos-day-num { font-size: 14px; }
+}
+
+@media (min-width: 720px) {
+  .photos-day-item {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    padding: 11px 16px;
+    gap: 12px;
+    text-align: left;
+    border-radius: 0;
+  }
+  .photos-day-item .photos-day-num {
+    font-size: 15px;
+    min-width: 28px;
+    text-align: left;
+    color: var(--text);
+  }
+  .photos-day-item .photos-day-date {
+    display: inline;
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+  .photos-day-item .photos-day-dot {
+    width: 8px;
+    height: 8px;
+  }
+  .photos-day-item:hover { background: var(--bg-tertiary); }
+  .photos-day-item.active {
+    transform: none;
+    background: var(--accent-soft);
+  }
+  .photos-day-item.active .photos-day-num,
+  .photos-day-item.active .photos-day-date { color: var(--accent); }
 }
 
 /* Calendar

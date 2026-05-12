@@ -334,6 +334,11 @@
     photosDayTag: $('#photosDayTag'),
     photosRailTrack: $('#photosRailTrack'),
     photosModePill: $('#photosModePill'),
+    photosSummary: $('#photosSummary'),
+    photosSummaryDay: $('#photosSummaryDay'),
+    photosSummaryDate: $('#photosSummaryDate'),
+    photosSummaryPhase: $('#photosSummaryPhase'),
+    photosSummaryStats: $('#photosSummaryStats'),
   };
 
   /* ----- Rendering ---------------------------------------------------- */
@@ -1420,6 +1425,7 @@
     const todayDay = journeyDayForToday();
     if (!todayDay) {
       el.photosRailTrack.innerHTML = '';
+      updatePhotoSummary(null);
       return;
     }
     const items = [];
@@ -1428,15 +1434,45 @@
       const cls = ['photos-day-item'];
       if (has) cls.push('has-photo');
       if (d === activeDay) cls.push('active');
+      const dateISO = state.startDate ? addDays(state.startDate, d - 1) : null;
+      const dateStr = dateISO ? formatShortDate(dateISO) : '';
       items.push(`
         <button class="${cls.join(' ')}" type="button" data-action="select-photo-day" data-day="${d}">
           <span class="photos-day-num">${d}</span>
-          ${has ? '<span class="photos-day-tiny">●</span>' : '<span class="photos-day-tiny">·</span>'}
+          <span class="photos-day-date">${dateStr}</span>
+          <span class="photos-day-dot" aria-hidden="true"></span>
         </button>
       `);
     }
     el.photosRailTrack.innerHTML = items.join('');
     scrollRailTo(activeDay);
+    updatePhotoSummary(activeDay || todayDay);
+  }
+
+  function updatePhotoSummary(day) {
+    if (!el.photosSummary) return;
+    const target = day || journeyDayForToday();
+    if (!target || !state.startDate) {
+      el.photosSummaryDay.textContent = '—';
+      el.photosSummaryDate.textContent = '';
+      el.photosSummaryPhase.textContent = '';
+      el.photosSummaryStats.textContent = '';
+      return;
+    }
+    el.photosSummaryDay.textContent = `Day ${target}`;
+    const dateISO = addDays(state.startDate, target - 1);
+    el.photosSummaryDate.textContent = formatFullDate(dateISO);
+    const phaseInfo = phaseDayFromJourneyDay(target);
+    if (phaseInfo) {
+      const phase = PHASES[phaseInfo.phaseId];
+      el.photosSummaryPhase.textContent = `${phase.name} · Day ${phaseInfo.dayIndex + 1} of ${phase.duration}`;
+    } else {
+      el.photosSummaryPhase.textContent = '';
+    }
+    const uploaded = Object.keys(state.photos || {}).length;
+    const todayDay = journeyDayForToday() || 0;
+    el.photosSummaryStats.textContent =
+      `${uploaded} of ${todayDay} photo${todayDay === 1 ? '' : 's'} uploaded · ${Math.max(0, todayDay - uploaded)} to catch up`;
   }
 
   function scrollRailTo(day) {
