@@ -319,6 +319,10 @@
     photoAlignZoomSlider: $('#photoAlignZoomSlider'),
     photoAlignCalibrate: $('#photoAlignCalibrate'),
     photoAlignSaveBtn: $('#photoAlignSaveBtn'),
+    photoAlignControls: $('#photoAlignControls'),
+    photoAlignMagnifier: $('#photoAlignMagnifier'),
+    photoAlignMagnifierClone: $('#photoAlignMagnifierClone'),
+    photoAlignMagnifierImg: $('#photoAlignMagnifierImg'),
     photosCard: $('#photosCard'),
     photosStage: $('#photosStage'),
     photosImage: $('#photosImage'),
@@ -1019,7 +1023,8 @@
     const { pins, transform, isCalibrating } = alignState;
     const ref = defaultRef();
 
-    // Position the targets (where pins should land)
+    // Controls and reference targets are only relevant in their respective modes
+    el.photoAlignControls.hidden = !isCalibrating;
     el.photoAlignTarget1.style.left = `${ref.r1.x * W}px`;
     el.photoAlignTarget1.style.top = `${ref.r1.y * H}px`;
     el.photoAlignTarget2.style.left = `${ref.r2.x * W}px`;
@@ -1028,11 +1033,15 @@
     el.photoAlignTarget2.style.display = isCalibrating ? 'none' : '';
 
     // Image transform — rotate/scale around canvas center, then translate
-    el.photoAlignImg.style.transform =
+    const imgTransform =
       `translate(${transform.tx}px, ${transform.ty}px) ` +
       `translate(${W / 2}px, ${H / 2}px) ` +
       `rotate(${transform.rotate}rad) scale(${transform.scale}) ` +
       `translate(${-W / 2}px, ${-H / 2}px)`;
+    el.photoAlignImg.style.transform = imgTransform;
+    if (!el.photoAlignMagnifier.hidden) {
+      el.photoAlignMagnifierImg.style.transform = imgTransform;
+    }
 
     // Pins follow the photo
     const p1Pos = pins[0] ? transformPoint(pins[0], transform, W, H) : null;
@@ -1151,48 +1160,118 @@
     restartPhotoCarousel();
   }
 
+  const MAGNIFIER_SIZE = 140;
+  const MAGNIFIER_ZOOM = 2.5;
+  const MAGNIFIER_HOLD_MS = 180;
+
+  function showMagnifier(cx, cy) {
+    const W = el.photoAlignCanvas.clientWidth;
+    const H = el.photoAlignCanvas.clientHeight;
+    el.photoAlignMagnifierClone.style.width = `${W}px`;
+    el.photoAlignMagnifierClone.style.height = `${H}px`;
+    el.photoAlignMagnifierImg.src = el.photoAlignImg.src;
+    el.photoAlignMagnifierImg.style.transform = el.photoAlignImg.style.transform;
+    el.photoAlignMagnifier.hidden = false;
+    updateMagnifier(cx, cy);
+  }
+
+  function updateMagnifier(cx, cy) {
+    if (el.photoAlignMagnifier.hidden) return;
+    const W = el.photoAlignCanvas.clientWidth;
+    const H = el.photoAlignCanvas.clientHeight;
+    const M = MAGNIFIER_SIZE;
+    const S = MAGNIFIER_ZOOM;
+    let mx = cx - M / 2;
+    let my = cy - M - 30;
+    if (my < 0) my = cy + 30;
+    mx = Math.max(0, Math.min(W - M, mx));
+    my = Math.max(0, Math.min(H - M, my));
+    el.photoAlignMagnifier.style.left = `${mx}px`;
+    el.photoAlignMagnifier.style.top = `${my}px`;
+    el.photoAlignMagnifierClone.style.transform =
+      `translate(${M / 2}px, ${M / 2}px) scale(${S}) translate(${-cx}px, ${-cy}px)`;
+    el.photoAlignMagnifierImg.style.transform = el.photoAlignImg.style.transform;
+  }
+
+  function hideMagnifier() {
+    el.photoAlignMagnifier.hidden = true;
+  }
+
   function setupAlignGestures() {
     const canvas = el.photoAlignCanvas;
     let drag = null;
     const MOVE_THRESHOLD = 6;
 
+    const shouldPan = () =>
+      alignState && alignState.pins[0] && alignState.pins[1] && alignState.isCalibrating;
+
     canvas.addEventListener('pointerdown', (e) => {
       if (!alignState) return;
       try { canvas.setPointerCapture(e.pointerId); } catch {}
+      const rect = canvas.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
       drag = {
         type: 'pending',
         startX: e.clientX, startY: e.clientY,
+        cx, cy,
         origTransform: { ...alignState.transform },
+        holdTimer: null,
       };
+      // After a short hold, switch to "placing" mode and show the magnifier
+      if (!shouldPan()) {
+        drag.holdTimer = setTimeout(() => {
+          if (!drag || drag.type === 'pan') return;
+          drag.type = 'placing';
+          showMagnifier(drag.cx, drag.cy);
+        }, MAGNIFIER_HOLD_MS);
+      }
     });
 
     canvas.addEventListener('pointermove', (e) => {
       if (!drag || !alignState) return;
+      const rect = canvas.getBoundingClientRect();
+      const cx = e.clientX - rect.left;
+      const cy = e.clientY - rect.top;
       const dx = e.clientX - drag.startX;
       const dy = e.clientY - drag.startY;
+      drag.cx = cx;
+      drag.cy = cy;
       if (drag.type === 'pending' && Math.hypot(dx, dy) > MOVE_THRESHOLD) {
-        const canPan = alignState.pins[0] && alignState.pins[1] && alignState.isCalibrating;
-        drag.type = canPan ? 'pan' : 'consumed';
+        if (shouldPan()) {
+          drag.type = 'pan';
+          if (drag.holdTimer) clearTimeout(drag.holdTimer);
+        } else {
+          drag.type = 'placing';
+          if (drag.holdTimer) clearTimeout(drag.holdTimer);
+          showMagnifier(cx, cy);
+        }
       }
       if (drag.type === 'pan') {
         alignState.transform.tx = drag.origTransform.tx + dx;
         alignState.transform.ty = drag.origTransform.ty + dy;
         renderAlignView();
+      } else if (drag.type === 'placing') {
+        updateMagnifier(cx, cy);
       }
     });
 
     canvas.addEventListener('pointerup', (e) => {
       if (!drag) return;
       try { canvas.releasePointerCapture(e.pointerId); } catch {}
-      const isTap = drag.type === 'pending';
-      drag = null;
-      if (isTap) {
-        const rect = canvas.getBoundingClientRect();
-        placeOrMovePin(e.clientX - rect.left, e.clientY - rect.top);
+      if (drag.holdTimer) clearTimeout(drag.holdTimer);
+      hideMagnifier();
+      if (drag.type === 'pending' || drag.type === 'placing') {
+        placeOrMovePin(drag.cx, drag.cy);
       }
+      drag = null;
     });
 
-    canvas.addEventListener('pointercancel', () => { drag = null; });
+    canvas.addEventListener('pointercancel', () => {
+      if (drag?.holdTimer) clearTimeout(drag.holdTimer);
+      hideMagnifier();
+      drag = null;
+    });
 
     // Mouse wheel for zoom while calibrating
     canvas.addEventListener('wheel', (e) => {
@@ -1822,6 +1901,20 @@
       case 'open-align': openAlignView(); break;
       case 'photo-align-cancel': closeAlignView(); break;
       case 'photo-align-save': savePhotoAlignment(); break;
+      case 'photo-align-reset-rotate':
+        if (alignState) {
+          alignState.transform.rotate = 0;
+          el.photoAlignRotateSlider.value = 0;
+          renderAlignView();
+        }
+        break;
+      case 'photo-align-reset-zoom':
+        if (alignState) {
+          alignState.transform.scale = 1;
+          el.photoAlignZoomSlider.value = 1;
+          renderAlignView();
+        }
+        break;
       case 'select-photo-day': {
         const d = Number(t.dataset.day);
         if (!d) break;

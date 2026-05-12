@@ -1312,6 +1312,82 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 .photo-align-hint.hidden { opacity: 0; }
 
+.photo-align-magnifier {
+  position: absolute;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  border: 3px solid white;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25), 0 10px 28px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 10;
+  background: #000;
+  will-change: left, top;
+}
+
+.photo-align-magnifier-clone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+.photo-align-magnifier-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: 0 0;
+}
+
+.photo-align-magnifier-crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+.photo-align-magnifier-crosshair::before,
+.photo-align-magnifier-crosshair::after {
+  content: '';
+  position: absolute;
+  background: rgba(255, 149, 0, 0.95);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.6);
+}
+.photo-align-magnifier-crosshair::before {
+  left: -12px;
+  top: -1px;
+  height: 2px;
+  width: 24px;
+}
+.photo-align-magnifier-crosshair::after {
+  top: -12px;
+  left: -1px;
+  width: 2px;
+  height: 24px;
+}
+
+.photo-align-reset-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.18s var(--ease), transform 0.12s var(--ease-spring), color 0.18s var(--ease);
+  flex-shrink: 0;
+}
+.photo-align-reset-btn:hover { background: var(--bg-tertiary); color: var(--text); }
+.photo-align-reset-btn:active { transform: scale(0.92); }
+.photo-align-reset-btn svg { width: 16px; height: 16px; }
+
 .photo-align-controls {
   display: flex;
   flex-direction: column;
