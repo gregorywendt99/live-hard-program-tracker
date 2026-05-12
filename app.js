@@ -944,40 +944,6 @@
     return { x: (rx + cx) / W, y: (ry + cy) / H };
   }
 
-  // Exact-fit affine transform from 3 source points → 3 target points.
-  // Solves the 6-DOF affine matrix that lands every pin exactly on its
-  // target — at the cost of allowing non-uniform scale and shear, so the
-  // body can stretch slightly to make all three landmarks line up.
-  // Returns a 2x3 matrix { a, b, c, d, e, f } where (x', y') = (a*x + c*y + e, b*x + d*y + f).
-  function affineMatrixFromThree(sources, targets) {
-    const [s1, s2, s3] = sources;
-    const [t1, t2, t3] = targets;
-    const det = s1.x * (s2.y - s3.y) - s1.y * (s2.x - s3.x) + (s2.x * s3.y - s3.x * s2.y);
-    if (Math.abs(det) < 1e-6) return null;
-    const inv = 1 / det;
-    const a = inv * (t1.x * (s2.y - s3.y) - s1.y * (t2.x - t3.x) + (t2.x * s3.y - t3.x * s2.y));
-    const c = inv * (s1.x * (t2.x - t3.x) - t1.x * (s2.x - s3.x) + (s2.x * t3.x - s3.x * t2.x));
-    const e = inv * (s1.x * (s2.y * t3.x - t2.x * s3.y) - s1.y * (s2.x * t3.x - t2.x * s3.x) + t1.x * (s2.x * s3.y - s2.y * s3.x));
-    const b = inv * (t1.y * (s2.y - s3.y) - s1.y * (t2.y - t3.y) + (t2.y * s3.y - t3.y * s2.y));
-    const d = inv * (s1.x * (t2.y - t3.y) - t1.y * (s2.x - s3.x) + (s2.x * t3.y - s3.x * t2.y));
-    const f = inv * (s1.x * (s2.y * t3.y - t2.y * s3.y) - s1.y * (s2.x * t3.y - t2.y * s3.x) + t1.y * (s2.x * s3.y - s2.y * s3.x));
-    return { a, b, c, d, e, f };
-  }
-
-  function applyMatrix(p, m, W, H) {
-    const x = p.x * W, y = p.y * H;
-    return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f };
-  }
-
-  function applyInverseMatrix(cp, m, W, H) {
-    const det = m.a * m.d - m.b * m.c;
-    if (Math.abs(det) < 1e-6) return { x: 0.5, y: 0.5 };
-    const inv = 1 / det;
-    const dx = cp.x - m.e;
-    const dy = cp.y - m.f;
-    return { x: inv * (m.d * dx - m.c * dy) / W, y: inv * (-m.b * dx + m.a * dy) / H };
-  }
-
   // Optimal least-squares similarity transform (Procrustes / 2D Kabsch):
   // given N source points and N target points in canvas pixels, find the
   // uniform-scale rotation + translation that best maps source → target.
@@ -1038,18 +1004,12 @@
   }
 
   // For the carousel: build a CSS matrix string that bakes everything in.
-  // 3-point alignment uses an exact-fit affine transform (every pin lands
-  // on its target). 2-point alignment falls back to a similarity transform.
+  // Always a similarity transform (translate + rotate + uniform scale) so
+  // the body never stretches or shears — best-fit for any number of pins.
   function alignmentMatrixCSS(alignment, ref, W, H) {
     const pts = pointsFromAlignment(alignment);
     if (pts.length < 2 || !ref) return '';
     const refs = refsForCount(ref, pts.length);
-    if (pts.length >= 3) {
-      const sources = pts.map((p) => ({ x: p.x * W, y: p.y * H }));
-      const targets = refs.map((r) => ({ x: r.x * W, y: r.y * H }));
-      const m = affineMatrixFromThree(sources, targets);
-      if (m) return `matrix(${m.a}, ${m.b}, ${m.c}, ${m.d}, ${m.e}, ${m.f})`;
-    }
     const t = computeAutoTransformN(pts, refs, W, H);
     if (!t) return '';
     const cx = W / 2, cy = H / 2;
@@ -1078,7 +1038,6 @@
           ]
         : [null, null, null],
       transform: { tx: 0, ty: 0, scale: 1, rotate: 0 },
-      transformMatrix: null, // affine matrix when set; overrides .transform
       isCalibrating: false,
       drag: null,
     };
@@ -1127,27 +1086,21 @@
       tEl.style.display = isCalibrating ? 'none' : '';
     });
 
-    // Image transform — use affine matrix if set (3-pin auto-align),
-    // otherwise the similarity transform from sliders/drag.
-    const m = alignState.transformMatrix;
-    const imgTransform = m
-      ? `matrix(${m.a}, ${m.b}, ${m.c}, ${m.d}, ${m.e}, ${m.f})`
-      : `translate(${transform.tx}px, ${transform.ty}px) ` +
-        `translate(${W / 2}px, ${H / 2}px) ` +
-        `rotate(${transform.rotate}rad) scale(${transform.scale}) ` +
-        `translate(${-W / 2}px, ${-H / 2}px)`;
+    // Image transform — similarity (rotate + uniform scale + translate)
+    const imgTransform =
+      `translate(${transform.tx}px, ${transform.ty}px) ` +
+      `translate(${W / 2}px, ${H / 2}px) ` +
+      `rotate(${transform.rotate}rad) scale(${transform.scale}) ` +
+      `translate(${-W / 2}px, ${-H / 2}px)`;
     el.photoAlignImg.style.transform = imgTransform;
     if (!el.photoAlignMagnifier.hidden) {
       el.photoAlignMagnifierImg.style.transform = imgTransform;
     }
 
-    // Pins follow the photo (use whichever transform is active)
+    // Pins follow the photo
     const pinEls = [el.photoAlignPin1, el.photoAlignPin2, el.photoAlignPin3];
     pinEls.forEach((pEl, i) => {
-      let p = null;
-      if (pins[i]) {
-        p = m ? applyMatrix(pins[i], m, W, H) : transformPoint(pins[i], transform, W, H);
-      }
+      const p = pins[i] ? transformPoint(pins[i], transform, W, H) : null;
       if (p) {
         pEl.style.left = `${p.x}px`;
         pEl.style.top = `${p.y}px`;
@@ -1171,10 +1124,7 @@
     if (!alignState) return;
     const W = el.photoAlignCanvas.clientWidth;
     const H = el.photoAlignCanvas.clientHeight;
-    const m = alignState.transformMatrix;
-    const photoPos = m
-      ? applyInverseMatrix({ x: cx, y: cy }, m, W, H)
-      : inverseTransformPoint({ x: cx, y: cy }, alignState.transform, W, H);
+    const photoPos = inverseTransformPoint({ x: cx, y: cy }, alignState.transform, W, H);
     photoPos.x = Math.max(0, Math.min(1, photoPos.x));
     photoPos.y = Math.max(0, Math.min(1, photoPos.y));
     const pins = alignState.pins;
@@ -1185,14 +1135,11 @@
         autoAlignToReference();
       }
     } else {
-      // All pins placed — move the nearest one (computed in canvas space
-      // using whichever transform is currently active).
+      // All pins placed — move the nearest one
       let nearestIdx = 0;
       let nearestDist = Infinity;
       pins.forEach((p, i) => {
-        const pc = m
-          ? applyMatrix(p, m, W, H)
-          : transformPoint(p, alignState.transform, W, H);
+        const pc = transformPoint(p, alignState.transform, W, H);
         const d = Math.hypot(cx - pc.x, cy - pc.y);
         if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
       });
@@ -1210,19 +1157,8 @@
     const H = el.photoAlignCanvas.clientHeight;
     const ref = defaultRef();
     const refs = refsForCount(ref, placed.length);
-    if (placed.length >= 3) {
-      const sources = placed.map((p) => ({ x: p.x * W, y: p.y * H }));
-      const targets = refs.map((r) => ({ x: r.x * W, y: r.y * H }));
-      const m = affineMatrixFromThree(sources, targets);
-      if (m) {
-        alignState.transformMatrix = m;
-        alignState.transform = { tx: 0, ty: 0, scale: 1, rotate: 0 };
-        return;
-      }
-    }
     const t = computeAutoTransformN(placed, refs, W, H);
     if (!t) return;
-    alignState.transformMatrix = null;
     alignState.transform = t;
     el.photoAlignRotateSlider.value = t.rotate * 180 / Math.PI;
     el.photoAlignZoomSlider.value = Math.max(0.5, Math.min(3, t.scale));
@@ -1240,14 +1176,7 @@
   function onAlignCalibrateToggle() {
     if (!alignState) return;
     alignState.isCalibrating = el.photoAlignCalibrate.checked;
-    if (alignState.isCalibrating) {
-      // Sliders/drag use the similarity transform. Drop the affine matrix
-      // and reset the manual transform so the user starts from identity.
-      alignState.transformMatrix = null;
-      alignState.transform = { tx: 0, ty: 0, scale: 1, rotate: 0 };
-      el.photoAlignRotateSlider.value = 0;
-      el.photoAlignZoomSlider.value = 1;
-    } else if (alignState.pins.filter(Boolean).length >= 2) {
+    if (!alignState.isCalibrating && alignState.pins.filter(Boolean).length >= 2) {
       autoAlignToReference();
     }
     renderAlignView();
