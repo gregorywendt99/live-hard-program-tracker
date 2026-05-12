@@ -107,6 +107,7 @@
     waterCustomAmounts: [],
     photos: {}, // { [journeyDay: number 1-indexed]: { uploadedAt: string, alignment?: { p1, p2 } } }
     photoAlignmentRef: { r1: { x: 0.5, y: 0.22 }, r2: { x: 0.5, y: 0.5 }, r3: { x: 0.5, y: 0.78 } },
+    photoAspectRatio: null, // width / height of the first uploaded photo
   });
 
   let state = defaultState();
@@ -348,6 +349,7 @@
 
   function render() {
     applyTheme();
+    applyPhotoAspect();
     if (appPhase === 'loading') { showSection('boot'); return; }
     if (appPhase === 'setup') { showSection('setup'); return; }
     if (appPhase === 'auth') { showSection('auth'); updateAuthUI(); return; }
@@ -370,6 +372,15 @@
     document.querySelectorAll('.segment[data-theme]').forEach((s) => {
       s.classList.toggle('active', s.dataset.theme === (state.settings.theme || 'auto'));
     });
+  }
+
+  function applyPhotoAspect() {
+    const r = state.photoAspectRatio;
+    if (r && Number.isFinite(r) && r > 0) {
+      document.documentElement.style.setProperty('--photo-aspect-ratio', String(r));
+    } else {
+      document.documentElement.style.removeProperty('--photo-aspect-ratio');
+    }
   }
 
   function updateAccountUI() {
@@ -704,6 +715,7 @@
       const url = URL.createObjectURL(file);
       img.onload = async () => {
         URL.revokeObjectURL(url);
+        const aspectRatio = img.naturalWidth / img.naturalHeight;
         let { width, height } = img;
         const longer = Math.max(width, height);
         if (longer > PHOTO_MAX_DIM) {
@@ -716,15 +728,13 @@
         canvas.height = height;
         canvas.getContext('2d').drawImage(img, 0, 0, width, height);
 
-        // Try the chosen quality first; if the encoded blob is too large,
-        // drop quality stepwise until it fits.
         const qualities = [PHOTO_QUALITY, 0.65, 0.55, 0.45, 0.35];
         for (const q of qualities) {
           const blob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', q));
           if (!blob) continue;
           if (blob.size <= PHOTO_MAX_BYTES) {
             const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
+            reader.onload = () => resolve({ dataUrl: reader.result, aspectRatio });
             reader.onerror = () => reject(new Error('Read failed'));
             reader.readAsDataURL(blob);
             return;
@@ -781,7 +791,7 @@
     el.photoProgressLabel.textContent = 'Compressing…';
 
     try {
-      const dataUrl = await compressImageToDataURL(file);
+      const { dataUrl, aspectRatio } = await compressImageToDataURL(file);
       el.photoProgressFill.style.width = '70%';
       el.photoProgressLabel.textContent = 'Saving…';
 
@@ -796,6 +806,12 @@
 
       if (!state.photos) state.photos = {};
       state.photos[dayNum] = { uploadedAt: new Date().toISOString() };
+
+      // Lock in the viewport aspect ratio to the first photo uploaded.
+      if (!state.photoAspectRatio && Number.isFinite(aspectRatio) && aspectRatio > 0) {
+        state.photoAspectRatio = aspectRatio;
+        applyPhotoAspect();
+      }
 
       const todayDay = journeyDayForToday();
       if (dayNum === todayDay) {
@@ -1255,14 +1271,47 @@
     el.photoAlignMagnifier.hidden = true;
   }
 
+  function setPinAt(pinIdx, cx, cy) {
+    if (!alignState || pinIdx < 0 || pinIdx > 2) return;
+    const W = el.photoAlignCanvas.clientWidth;
+    const H = el.photoAlignCanvas.clientHeight;
+    const photoPos = inverseTransformPoint({ x: cx, y: cy }, alignState.transform, W, H);
+    photoPos.x = Math.max(0, Math.min(1, photoPos.x));
+    photoPos.y = Math.max(0, Math.min(1, photoPos.y));
+    alignState.pins[pinIdx] = photoPos;
+    if (!alignState.isCalibrating && alignState.pins.filter(Boolean).length >= 2) {
+      autoAlignToReference();
+    }
+    renderAlignView();
+  }
+
+  function findPinNearCanvasPoint(cx, cy, radius = 28) {
+    if (!alignState) return -1;
+    const W = el.photoAlignCanvas.clientWidth;
+    const H = el.photoAlignCanvas.clientHeight;
+    let bestIdx = -1;
+    let bestDist = Infinity;
+    alignState.pins.forEach((p, i) => {
+      if (!p) return;
+      const pc = transformPoint(p, alignState.transform, W, H);
+      const d = Math.hypot(cx - pc.x, cy - pc.y);
+      if (d < radius && d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    });
+    return bestIdx;
+  }
+
   function setupAlignGestures() {
     const canvas = el.photoAlignCanvas;
     let drag = null;
     const MOVE_THRESHOLD = 6;
 
-    // Pan locks in only when EVERY pin slot is filled. Otherwise the next
-    // drag should be a pin placement, even during calibration.
-    const shouldPan = () =>
+    // Pan is only allowed in calibration mode AND only if the pointer
+    // didn't land on an existing pin. Pin grabs always win over pans so
+    // the user can re-position pins even when all three are placed.
+    const canPanFreely = () =>
       alignState && alignState.pins.every(Boolean) && alignState.isCalibrating;
 
     canvas.addEventListener('pointerdown', (e) => {
@@ -1271,17 +1320,25 @@
       const rect = canvas.getBoundingClientRect();
       const cx = e.clientX - rect.left;
       const cy = e.clientY - rect.top;
+
+      // If the press lands near an existing pin, grab it.
+      const grabbedPinIdx = findPinNearCanvasPoint(cx, cy);
+
       drag = {
-        type: 'pending',
+        type: grabbedPinIdx >= 0 ? 'moving-pin' : 'pending',
+        pinIdx: grabbedPinIdx,
         startX: e.clientX, startY: e.clientY,
         cx, cy,
         origTransform: { ...alignState.transform },
         holdTimer: null,
       };
-      // After a short hold, switch to "placing" mode and show the magnifier
-      if (!shouldPan()) {
+
+      if (drag.type === 'moving-pin') {
+        // Show the magnifier immediately when grabbing a pin
+        showMagnifier(cx, cy);
+      } else if (!canPanFreely()) {
         drag.holdTimer = setTimeout(() => {
-          if (!drag || drag.type === 'pan') return;
+          if (!drag || drag.type === 'pan' || drag.type === 'moving-pin') return;
           drag.type = 'placing';
           showMagnifier(drag.cx, drag.cy);
         }, MAGNIFIER_HOLD_MS);
@@ -1298,7 +1355,7 @@
       drag.cx = cx;
       drag.cy = cy;
       if (drag.type === 'pending' && Math.hypot(dx, dy) > MOVE_THRESHOLD) {
-        if (shouldPan()) {
+        if (canPanFreely()) {
           drag.type = 'pan';
           if (drag.holdTimer) clearTimeout(drag.holdTimer);
         } else {
@@ -1311,7 +1368,7 @@
         alignState.transform.tx = drag.origTransform.tx + dx;
         alignState.transform.ty = drag.origTransform.ty + dy;
         renderAlignView();
-      } else if (drag.type === 'placing') {
+      } else if (drag.type === 'placing' || drag.type === 'moving-pin') {
         updateMagnifier(cx, cy);
       }
     });
@@ -1321,7 +1378,9 @@
       try { canvas.releasePointerCapture(e.pointerId); } catch {}
       if (drag.holdTimer) clearTimeout(drag.holdTimer);
       hideMagnifier();
-      if (drag.type === 'pending' || drag.type === 'placing') {
+      if (drag.type === 'moving-pin') {
+        setPinAt(drag.pinIdx, drag.cx, drag.cy);
+      } else if (drag.type === 'pending' || drag.type === 'placing') {
         placeOrMovePin(drag.cx, drag.cy);
       }
       drag = null;
