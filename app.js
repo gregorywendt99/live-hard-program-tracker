@@ -106,7 +106,7 @@
     settings: { theme: 'auto' },
     waterCustomAmounts: [],
     photos: {}, // { [journeyDay: number 1-indexed]: { uploadedAt: string, alignment?: { p1, p2 } } }
-    photoAlignmentRef: { r1: { x: 0.5, y: 0.30 }, r2: { x: 0.5, y: 0.70 } },
+    photoAlignmentRef: { r1: { x: 0.5, y: 0.22 }, r2: { x: 0.5, y: 0.5 }, r3: { x: 0.5, y: 0.78 } },
   });
 
   let state = defaultState();
@@ -312,8 +312,10 @@
     photoAlignImg: $('#photoAlignImg'),
     photoAlignPin1: $('#photoAlignPin1'),
     photoAlignPin2: $('#photoAlignPin2'),
+    photoAlignPin3: $('#photoAlignPin3'),
     photoAlignTarget1: $('#photoAlignTarget1'),
     photoAlignTarget2: $('#photoAlignTarget2'),
+    photoAlignTarget3: $('#photoAlignTarget3'),
     photoAlignHint: $('#photoAlignHint'),
     photoAlignRotateSlider: $('#photoAlignRotateSlider'),
     photoAlignZoomSlider: $('#photoAlignZoomSlider'),
@@ -908,7 +910,12 @@
   let alignState = null;
 
   function defaultRef() {
-    return state.photoAlignmentRef || { r1: { x: 0.5, y: 0.3 }, r2: { x: 0.5, y: 0.7 } };
+    const r = state.photoAlignmentRef || {};
+    return {
+      r1: r.r1 || { x: 0.5, y: 0.22 },
+      r2: r.r2 || { x: 0.5, y: 0.5 },
+      r3: r.r3 || { x: 0.5, y: 0.78 },
+    };
   }
 
   function transformPoint(p, t, W, H) {
@@ -937,33 +944,71 @@
     return { x: (rx + cx) / W, y: (ry + cy) / H };
   }
 
-  // Given source pins p1, p2 (photo-normalized) and target ref r1, r2
-  // (canvas-normalized), build the transform that, when used by transformPoint,
-  // sends p1 → r1 and p2 → r2.
-  function computeAutoTransform(p1, p2, r1, r2, W, H) {
-    const s1x = p1.x * W, s1y = p1.y * H;
-    const s2x = p2.x * W, s2y = p2.y * H;
-    const t1x = r1.x * W, t1y = r1.y * H;
-    const t2x = r2.x * W, t2y = r2.y * H;
-    const dsx = s2x - s1x, dsy = s2y - s1y;
-    const dtx = t2x - t1x, dty = t2y - t1y;
-    const srcLen = Math.hypot(dsx, dsy);
-    if (srcLen < 0.5) return null;
-    const tarLen = Math.hypot(dtx, dty);
-    const scale = tarLen / srcLen;
-    const angle = Math.atan2(dty, dtx) - Math.atan2(dsy, dsx);
+  // Optimal least-squares similarity transform (Procrustes / 2D Kabsch):
+  // given N source points and N target points in canvas pixels, find the
+  // uniform-scale rotation + translation that best maps source → target.
+  // For N=2 this is the unique exact-fit similarity. For N=3 it's the
+  // best-fit, with no shearing or non-uniform stretch.
+  function computeAutoTransformN(pts, refs, W, H) {
+    const n = Math.min(pts.length, refs.length);
+    if (n < 2) return null;
+    const sources = [];
+    const targets = [];
+    for (let i = 0; i < n; i++) {
+      if (!pts[i] || !refs[i]) continue;
+      sources.push({ x: pts[i].x * W, y: pts[i].y * H });
+      targets.push({ x: refs[i].x * W, y: refs[i].y * H });
+    }
+    const m = sources.length;
+    if (m < 2) return null;
+    let scx = 0, scy = 0, tcx = 0, tcy = 0;
+    for (let i = 0; i < m; i++) {
+      scx += sources[i].x; scy += sources[i].y;
+      tcx += targets[i].x; tcy += targets[i].y;
+    }
+    scx /= m; scy /= m; tcx /= m; tcy /= m;
+    let dot = 0, cross = 0, sqs = 0;
+    for (let i = 0; i < m; i++) {
+      const sx = sources[i].x - scx, sy = sources[i].y - scy;
+      const tx = targets[i].x - tcx, ty = targets[i].y - tcy;
+      dot   += sx * tx + sy * ty;
+      cross += sx * ty - sy * tx;
+      sqs   += sx * sx + sy * sy;
+    }
+    if (sqs < 0.5) return null;
+    const scale = Math.sqrt(dot * dot + cross * cross) / sqs;
+    const angle = Math.atan2(cross, dot);
     const cx = W / 2, cy = H / 2;
     const cos = Math.cos(angle) * scale;
     const sin = Math.sin(angle) * scale;
-    const rx = cos * (s1x - cx) - sin * (s1y - cy);
-    const ry = sin * (s1x - cx) + cos * (s1y - cy);
-    return { tx: t1x - cx - rx, ty: t1y - cy - ry, scale, rotate: angle };
+    const rx = cos * (scx - cx) - sin * (scy - cy);
+    const ry = sin * (scx - cx) + cos * (scy - cy);
+    return { tx: tcx - cx - rx, ty: tcy - cy - ry, scale, rotate: angle };
+  }
+
+  function pointsFromAlignment(alignment) {
+    if (!alignment) return [];
+    const pts = [];
+    if (alignment.p1) pts.push(alignment.p1);
+    if (alignment.p2) pts.push(alignment.p2);
+    if (alignment.p3) pts.push(alignment.p3);
+    return pts;
+  }
+
+  function refsForCount(ref, count) {
+    const out = [];
+    if (count >= 1) out.push(ref.r1);
+    if (count >= 2) out.push(ref.r2);
+    if (count >= 3) out.push(ref.r3);
+    return out;
   }
 
   // For the carousel: build a CSS matrix string that bakes everything in.
   function alignmentMatrixCSS(alignment, ref, W, H) {
-    if (!alignment || !alignment.p1 || !alignment.p2 || !ref) return '';
-    const t = computeAutoTransform(alignment.p1, alignment.p2, ref.r1, ref.r2, W, H);
+    const pts = pointsFromAlignment(alignment);
+    if (pts.length < 2 || !ref) return '';
+    const refs = refsForCount(ref, pts.length);
+    const t = computeAutoTransformN(pts, refs, W, H);
     if (!t) return '';
     const cx = W / 2, cy = H / 2;
     const cos = Math.cos(t.rotate) * t.scale;
@@ -983,7 +1028,13 @@
     const existing = state.photos[photoSheetDay].alignment;
     alignState = {
       day: photoSheetDay,
-      pins: existing ? [{ ...existing.p1 }, { ...existing.p2 }] : [null, null],
+      pins: existing
+        ? [
+            existing.p1 ? { ...existing.p1 } : null,
+            existing.p2 ? { ...existing.p2 } : null,
+            existing.p3 ? { ...existing.p3 } : null,
+          ]
+        : [null, null, null],
       transform: { tx: 0, ty: 0, scale: 1, rotate: 0 },
       isCalibrating: false,
       drag: null,
@@ -998,8 +1049,8 @@
 
     fetchPhotoURL(photoSheetDay).then((url) => {
       if (url) el.photoAlignImg.src = url;
-      // If both pins are set, auto-align to current ref.
-      if (alignState && alignState.pins[0] && alignState.pins[1]) {
+      // If at least 2 pins are set, auto-align to current ref.
+      if (alignState && alignState.pins.filter(Boolean).length >= 2) {
         autoAlignToReference();
       }
       renderAlignView();
@@ -1025,12 +1076,13 @@
 
     // Controls and reference targets are only relevant in their respective modes
     el.photoAlignControls.hidden = !isCalibrating;
-    el.photoAlignTarget1.style.left = `${ref.r1.x * W}px`;
-    el.photoAlignTarget1.style.top = `${ref.r1.y * H}px`;
-    el.photoAlignTarget2.style.left = `${ref.r2.x * W}px`;
-    el.photoAlignTarget2.style.top = `${ref.r2.y * H}px`;
-    el.photoAlignTarget1.style.display = isCalibrating ? 'none' : '';
-    el.photoAlignTarget2.style.display = isCalibrating ? 'none' : '';
+    const targets = [el.photoAlignTarget1, el.photoAlignTarget2, el.photoAlignTarget3];
+    const refPts = [ref.r1, ref.r2, ref.r3];
+    targets.forEach((tEl, i) => {
+      tEl.style.left = `${refPts[i].x * W}px`;
+      tEl.style.top = `${refPts[i].y * H}px`;
+      tEl.style.display = isCalibrating ? 'none' : '';
+    });
 
     // Image transform — rotate/scale around canvas center, then translate
     const imgTransform =
@@ -1044,28 +1096,24 @@
     }
 
     // Pins follow the photo
-    const p1Pos = pins[0] ? transformPoint(pins[0], transform, W, H) : null;
-    const p2Pos = pins[1] ? transformPoint(pins[1], transform, W, H) : null;
-    if (p1Pos) {
-      el.photoAlignPin1.style.left = `${p1Pos.x}px`;
-      el.photoAlignPin1.style.top = `${p1Pos.y}px`;
-      el.photoAlignPin1.classList.remove('placeholder');
-    } else {
-      el.photoAlignPin1.classList.add('placeholder');
-    }
-    if (p2Pos) {
-      el.photoAlignPin2.style.left = `${p2Pos.x}px`;
-      el.photoAlignPin2.style.top = `${p2Pos.y}px`;
-      el.photoAlignPin2.classList.remove('placeholder');
-    } else {
-      el.photoAlignPin2.classList.add('placeholder');
-    }
+    const pinEls = [el.photoAlignPin1, el.photoAlignPin2, el.photoAlignPin3];
+    pinEls.forEach((pEl, i) => {
+      const p = pins[i] ? transformPoint(pins[i], transform, W, H) : null;
+      if (p) {
+        pEl.style.left = `${p.x}px`;
+        pEl.style.top = `${p.y}px`;
+        pEl.classList.remove('placeholder');
+      } else {
+        pEl.classList.add('placeholder');
+      }
+    });
 
     // Hint text
-    if (!pins[0]) el.photoAlignHint.textContent = 'Tap a landmark to place Pin 1';
-    else if (!pins[1]) el.photoAlignHint.textContent = 'Tap a second landmark for Pin 2';
+    if (!pins[0]) el.photoAlignHint.textContent = 'Tap to place pin 1 (e.g. forehead)';
+    else if (!pins[1]) el.photoAlignHint.textContent = 'Tap to place pin 2 (e.g. chest)';
+    else if (!pins[2]) el.photoAlignHint.textContent = 'Tap to place pin 3 (e.g. belly button)';
     else if (isCalibrating) el.photoAlignHint.textContent = 'Drag, zoom or rotate to frame';
-    else el.photoAlignHint.textContent = 'Tap a pin and re-tap to move it';
+    else el.photoAlignHint.textContent = 'Tap any pin to move it';
 
     el.photoAlignSaveBtn.textContent = isCalibrating ? 'Set as reference' : 'Save alignment';
   }
@@ -1077,20 +1125,24 @@
     const photoPos = inverseTransformPoint({ x: cx, y: cy }, alignState.transform, W, H);
     photoPos.x = Math.max(0, Math.min(1, photoPos.x));
     photoPos.y = Math.max(0, Math.min(1, photoPos.y));
-    if (!alignState.pins[0]) {
-      alignState.pins[0] = photoPos;
-    } else if (!alignState.pins[1]) {
-      alignState.pins[1] = photoPos;
-      // Auto-align as soon as both pins are placed (when NOT calibrating)
-      if (!alignState.isCalibrating) autoAlignToReference();
+    const pins = alignState.pins;
+    const firstEmpty = pins.findIndex((p) => !p);
+    if (firstEmpty !== -1) {
+      pins[firstEmpty] = photoPos;
+      // Once we've placed enough pins to align, do it (when NOT calibrating).
+      if (!alignState.isCalibrating && pins.filter(Boolean).length >= 2) {
+        autoAlignToReference();
+      }
     } else {
-      // Both placed — move the nearest one
-      const p1Canvas = transformPoint(alignState.pins[0], alignState.transform, W, H);
-      const p2Canvas = transformPoint(alignState.pins[1], alignState.transform, W, H);
-      const d1 = Math.hypot(cx - p1Canvas.x, cy - p1Canvas.y);
-      const d2 = Math.hypot(cx - p2Canvas.x, cy - p2Canvas.y);
-      if (d1 < d2) alignState.pins[0] = photoPos;
-      else alignState.pins[1] = photoPos;
+      // All pins placed — move the nearest one
+      let nearestIdx = 0;
+      let nearestDist = Infinity;
+      pins.forEach((p, i) => {
+        const pc = transformPoint(p, alignState.transform, W, H);
+        const d = Math.hypot(cx - pc.x, cy - pc.y);
+        if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
+      });
+      pins[nearestIdx] = photoPos;
       if (!alignState.isCalibrating) autoAlignToReference();
     }
     renderAlignView();
@@ -1098,12 +1150,13 @@
 
   function autoAlignToReference() {
     if (!alignState) return;
-    const { pins } = alignState;
-    if (!pins[0] || !pins[1]) return;
+    const placed = alignState.pins.filter(Boolean);
+    if (placed.length < 2) return;
     const W = el.photoAlignCanvas.clientWidth;
     const H = el.photoAlignCanvas.clientHeight;
     const ref = defaultRef();
-    const t = computeAutoTransform(pins[0], pins[1], ref.r1, ref.r2, W, H);
+    const refs = refsForCount(ref, placed.length);
+    const t = computeAutoTransformN(placed, refs, W, H);
     if (!t) return;
     alignState.transform = t;
     el.photoAlignRotateSlider.value = t.rotate * 180 / Math.PI;
@@ -1122,7 +1175,7 @@
   function onAlignCalibrateToggle() {
     if (!alignState) return;
     alignState.isCalibrating = el.photoAlignCalibrate.checked;
-    if (!alignState.isCalibrating && alignState.pins[0] && alignState.pins[1]) {
+    if (!alignState.isCalibrating && alignState.pins.filter(Boolean).length >= 2) {
       autoAlignToReference();
     }
     renderAlignView();
@@ -1131,24 +1184,28 @@
   function savePhotoAlignment() {
     if (!alignState) return;
     const { day, pins, isCalibrating, transform } = alignState;
-    if (!pins[0] || !pins[1]) {
-      showToast('Place both pins first.');
+    const placedCount = pins.filter(Boolean).length;
+    if (placedCount < 2) {
+      showToast('Place at least 2 pins first.');
       return;
     }
     if (!state.photos[day]) {
       state.photos[day] = { uploadedAt: new Date().toISOString() };
     }
-    state.photos[day].alignment = { p1: { ...pins[0] }, p2: { ...pins[1] } };
+    const alignment = {};
+    if (pins[0]) alignment.p1 = { ...pins[0] };
+    if (pins[1]) alignment.p2 = { ...pins[1] };
+    if (pins[2]) alignment.p3 = { ...pins[2] };
+    state.photos[day].alignment = alignment;
 
     if (isCalibrating) {
       const W = el.photoAlignCanvas.clientWidth;
       const H = el.photoAlignCanvas.clientHeight;
-      const p1Canvas = transformPoint(pins[0], transform, W, H);
-      const p2Canvas = transformPoint(pins[1], transform, W, H);
-      state.photoAlignmentRef = {
-        r1: { x: p1Canvas.x / W, y: p1Canvas.y / H },
-        r2: { x: p2Canvas.x / W, y: p2Canvas.y / H },
-      };
+      const newRef = { ...state.photoAlignmentRef };
+      if (pins[0]) { const p = transformPoint(pins[0], transform, W, H); newRef.r1 = { x: p.x / W, y: p.y / H }; }
+      if (pins[1]) { const p = transformPoint(pins[1], transform, W, H); newRef.r2 = { x: p.x / W, y: p.y / H }; }
+      if (pins[2]) { const p = transformPoint(pins[2], transform, W, H); newRef.r3 = { x: p.x / W, y: p.y / H }; }
+      state.photoAlignmentRef = newRef;
       showToast('Reference updated. All photos will re-align.');
     } else {
       showToast('Alignment saved.');
@@ -1160,8 +1217,8 @@
     restartPhotoCarousel();
   }
 
-  const MAGNIFIER_SIZE = 140;
-  const MAGNIFIER_ZOOM = 2.5;
+  const MAGNIFIER_SIZE = 150;
+  const MAGNIFIER_ZOOM = 3.5;
   const MAGNIFIER_HOLD_MS = 180;
 
   function showMagnifier(cx, cy) {
