@@ -10,6 +10,7 @@ Single-page web app with email/password accounts and cross-device sync via Fireb
 - Per-phase task lists per the official rules (cold shower, power list, visualization, conversation with a stranger, random act of kindness)
 - Email/password accounts with cross-device sync (Firebase Auth + Firestore)
 - Real-time updates — check a task on your phone, watch it tick on your laptop
+- Daily progress photos with a built-in "Then vs Now" timeline carousel
 - Light, dark, and auto themes
 - Per-phase calendar with a completion heatmap
 - Reset controls for today, the current phase, any individual phase, or the entire journey
@@ -45,12 +46,20 @@ The tracker needs a free Firebase project to store account data. Free tier easil
 2. Choose **Production mode**, pick a region close to you (e.g. `us-central1`), and create.
 3. Once it loads, go to the **Rules** tab and replace the default rules with the contents of [`firestore.rules`](firestore.rules), then **Publish**.
 
-### 4. Authorize your domain
+### 4. Enable Cloud Storage (for progress photos)
+
+1. **Storage** in the left sidebar → **Get started**.
+2. Choose **Production mode**, same region as Firestore, **Done**.
+3. Go to the **Rules** tab and replace the default rules with the contents of [`storage.rules`](storage.rules), then **Publish**.
+
+Free tier: 5 GB stored + 1 GB/day downloads — more than enough for 75 daily photos.
+
+### 5. Authorize your domain
 
 1. **Authentication** → **Settings** tab → **Authorized domains**.
 2. Add your GitHub Pages domain (e.g. `gregorywendt99.github.io`). `localhost` should already be there for local development.
 
-### 5. Add a web app and copy the config
+### 6. Add a web app and copy the config
 
 1. **Project settings** (gear icon) → **General** tab → scroll to **Your apps**.
 2. Click the web icon (`</>`) to add a web app. Give it any nickname; skip Hosting.
@@ -74,7 +83,8 @@ That's it. Visit your site, create an account, and your progress will sync to an
 - `styles.css` — design system (Apple light/dark palette, glassmorphism, motion)
 - `app.js` — state, persistence, phase logic, rendering, Firebase auth + Firestore sync
 - `firebase-config.js` — your Firebase project credentials (safe to commit publicly)
-- `firestore.rules` — security rules to paste into Firebase Console
+- `firestore.rules` — Firestore security rules to paste into Firebase Console
+- `storage.rules` — Cloud Storage security rules for progress photos
 
 ## Privacy
 

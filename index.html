@@ -8,12 +8,13 @@
   <meta name="description" content="A clean, Apple-styled tracker for Andy Frisella's 75 HARD and the full Live Hard program." />
   <title>Live Hard — 75 HARD Tracker</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="stylesheet" href="styles.css?v=8" />
+  <link rel="stylesheet" href="styles.css?v=10" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23FF9500'/%3E%3Cpath d='M30 35 L70 35 M30 50 L70 50 M30 65 L60 65' stroke='white' stroke-width='8' stroke-linecap='round'/%3E%3C/svg%3E" />
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
-  <script src="firebase-config.js?v=8"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+  <script src="firebase-config.js?v=10"></script>
 </head>
 <body>
   <div class="app" id="app">
@@ -272,6 +273,34 @@
           <div class="calendar" id="calendar"></div>
         </section>
 
+        <!-- Photo timeline -->
+        <section class="card photos-card" id="photosCard">
+          <div class="card-header">
+            <div>
+              <div class="card-eyebrow">Progress</div>
+              <h2 class="card-title">Photo timeline</h2>
+            </div>
+            <div class="photos-mode-pill" id="photosModePill">—</div>
+          </div>
+          <div class="photos-stage" id="photosStage">
+            <div class="photos-image-wrap">
+              <img class="photos-image" id="photosImage" alt="Progress photo" />
+              <div class="photos-empty" id="photosEmpty">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                  <circle cx="12" cy="13" r="3.5"/>
+                </svg>
+                <div class="photos-empty-title">No photos yet</div>
+                <div class="photos-empty-body">Tap the Progress picture task to add your first photo.</div>
+              </div>
+              <div class="photos-day-tag" id="photosDayTag"></div>
+            </div>
+            <div class="photos-rail">
+              <div class="photos-rail-track" id="photosRailTrack"></div>
+            </div>
+          </div>
+        </section>
+
         <!-- Journey overview -->
         <section class="card journey-card">
           <div class="card-header">
@@ -388,6 +417,41 @@
       </div>
     </div>
 
+    <!-- Photo upload sheet -->
+    <div class="sheet" id="photoSheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-action="close-photo"></div>
+      <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="photoTitle">
+        <div class="sheet-header">
+          <h2 id="photoTitle">Progress photo</h2>
+          <button class="icon-btn" data-action="close-photo" aria-label="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+              <path d="M6 6l12 12 M18 6L6 18" />
+            </svg>
+          </button>
+        </div>
+        <div class="sheet-body">
+          <div class="photo-day-line" id="photoDayLine">Day —</div>
+          <div class="photo-preview" id="photoPreview">
+            <div class="photo-preview-placeholder">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <circle cx="12" cy="13" r="3.5"/>
+              </svg>
+              <span>No photo for this day yet</span>
+            </div>
+          </div>
+          <div class="photo-progress" id="photoProgress" hidden>
+            <div class="photo-progress-bar"><div class="photo-progress-fill" id="photoProgressFill"></div></div>
+            <div class="photo-progress-label" id="photoProgressLabel">Uploading…</div>
+          </div>
+          <input type="file" accept="image/*" capture="environment" id="photoInput" hidden />
+          <button class="btn btn-primary btn-full" data-action="pick-photo" id="photoPickBtn">Choose photo</button>
+          <button class="btn btn-danger-soft btn-full" data-action="remove-photo" id="photoRemoveBtn" hidden style="margin-top: 10px;">Remove photo</button>
+          <p class="settings-hint">Photos are encrypted in transit and stored under your private folder.</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Water log sheet -->
     <div class="sheet" id="waterSheet" aria-hidden="true">
       <div class="sheet-backdrop" data-action="close-water"></div>
@@ -450,6 +514,6 @@
     <div class="toast" id="toast" aria-live="polite" aria-atomic="true"></div>
   </div>
 
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

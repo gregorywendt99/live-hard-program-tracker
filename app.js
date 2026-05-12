@@ -81,11 +81,15 @@
   let firebaseApp = null;
   let firebaseAuth = null;
   let firestore = null;
+  let storage = null;
   let currentUser = null;
   let useLocalOnly = false;
   let unsubFirestore = null;
   let saveDebounceTimer = null;
   let initialLoadDone = false;
+  const photoUrlCache = new Map();
+  let photoSheetDay = null;
+  let photoUploadInProgress = false;
   let authMode = 'signin';
 
   /* ----- State management --------------------------------------------- */
@@ -102,6 +106,7 @@
     days: { '75hard': {}, phase1: {}, phase2: {}, phase3: {} },
     settings: { theme: 'auto' },
     waterCustomAmounts: [],
+    photos: {}, // { [journeyDay: number 1-indexed]: { uploadedAt: string } }
   });
 
   let state = defaultState();
@@ -287,6 +292,24 @@
     waterPresets: $('#waterPresets'),
     waterCustomForm: $('#waterCustomForm'),
     waterCustomInput: $('#waterCustomInput'),
+    photoSheet: $('#photoSheet'),
+    photoTitle: $('#photoTitle'),
+    photoDayLine: $('#photoDayLine'),
+    photoPreview: $('#photoPreview'),
+    photoInput: $('#photoInput'),
+    photoPickBtn: $('#photoPickBtn'),
+    photoRemoveBtn: $('#photoRemoveBtn'),
+    photoProgress: $('#photoProgress'),
+    photoProgressFill: $('#photoProgressFill'),
+    photoProgressLabel: $('#photoProgressLabel'),
+    photosCard: $('#photosCard'),
+    photosStage: $('#photosStage'),
+    photosImage: $('#photosImage'),
+    photosImageWrap: $('.photos-image-wrap'),
+    photosEmpty: $('#photosEmpty'),
+    photosDayTag: $('#photosDayTag'),
+    photosRailTrack: $('#photosRailTrack'),
+    photosModePill: $('#photosModePill'),
   };
 
   /* ----- Rendering ---------------------------------------------------- */
@@ -315,6 +338,7 @@
     renderTasks();
     renderCalendar();
     renderJourney();
+    restartPhotoCarousel();
     autoAdvanceIfPossible();
   }
 
@@ -405,14 +429,23 @@
     el.completionBadge.textContent = `${checkedCount} / ${phase.tasks.length}`;
     el.completionBadge.classList.toggle('complete', checkedCount === phase.tasks.length);
 
+    const journeyDayNum = state.startDate ? daysBetween(state.startDate, todayISO()) + 1 : null;
+
     el.tasksContainer.innerHTML = phase.tasks.map((taskId) => {
       const t = TASKS[taskId];
       const checked = !!dayState.tasks?.[taskId];
       const isWater = taskId === 'water';
-      const detail = isWater
-        ? `${dayState.water_oz || 0} / ${WATER_TARGET} fl oz · tap to log`
-        : t.detail;
-      const mainAction = isWater ? ' data-action="open-water"' : '';
+      const isPhoto = taskId === 'photo';
+      const hasPhoto = journeyDayNum && state.photos && state.photos[journeyDayNum];
+      let detail = t.detail;
+      let mainAction = '';
+      if (isWater) {
+        detail = `${dayState.water_oz || 0} / ${WATER_TARGET} fl oz · tap to log`;
+        mainAction = ' data-action="open-water"';
+      } else if (isPhoto) {
+        detail = hasPhoto ? 'Tap to view or replace today\'s photo' : 'Tap to upload today\'s photo';
+        mainAction = ' data-action="open-photo"';
+      }
       return `
         <div class="task ${checked ? 'checked' : ''}" data-task-id="${taskId}">
           <button class="task-main" type="button"${mainAction}>
@@ -602,6 +635,369 @@
     renderWaterSheet();
     renderTasks(); renderHero(); renderCalendar(); renderJourney();
     showToast('Today\'s water cleared.');
+  }
+
+  /* ----- Photos --------------------------------------------------------- */
+
+  const PHOTO_MAX_DIM = 1400;
+  const PHOTO_QUALITY = 0.85;
+
+  function journeyDayForToday() {
+    if (!state.startDate) return null;
+    return daysBetween(state.startDate, todayISO()) + 1;
+  }
+
+  function dateForJourneyDay(dayNum) {
+    if (!state.startDate || !dayNum) return null;
+    return addDays(state.startDate, dayNum - 1);
+  }
+
+  // Map a journey day (1-indexed) back to its phase + dayIndex within that phase.
+  function phaseDayFromJourneyDay(dayNum) {
+    if (!state.startDate || !dayNum) return null;
+    const target = addDays(state.startDate, dayNum - 1);
+    for (const pid of PHASE_ORDER) {
+      const phase = PHASES[pid];
+      // Only consider phases that have a known start date
+      let startISO = null;
+      if (pid === '75hard') startISO = state.startDate;
+      else if (state.currentPhase === pid && state.phaseStartDate) startISO = state.phaseStartDate;
+      if (!startISO) continue;
+      const offset = daysBetween(startISO, target);
+      if (offset >= 0 && offset < phase.duration) return { phaseId: pid, dayIndex: offset };
+    }
+    return null;
+  }
+
+  function compressImage(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        let { width, height } = img;
+        const longer = Math.max(width, height);
+        if (longer > PHOTO_MAX_DIM) {
+          const scale = PHOTO_MAX_DIM / longer;
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => blob ? resolve(blob) : reject(new Error('Compression failed')),
+          'image/jpeg',
+          PHOTO_QUALITY
+        );
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Could not read image')); };
+      img.src = url;
+    });
+  }
+
+  function photoRef(dayNum) {
+    if (!storage || !currentUser) return null;
+    return storage.ref(`users/${currentUser.uid}/photos/day${dayNum}.jpg`);
+  }
+
+  async function fetchPhotoURL(dayNum) {
+    if (photoUrlCache.has(dayNum)) return photoUrlCache.get(dayNum);
+    const ref = photoRef(dayNum);
+    if (!ref) return null;
+    try {
+      const url = await ref.getDownloadURL();
+      photoUrlCache.set(dayNum, url);
+      return url;
+    } catch {
+      return null;
+    }
+  }
+
+  function preloadImage(url) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
+  }
+
+  async function uploadPhotoForDay(dayNum, file) {
+    if (!storage || !currentUser) {
+      showToast('Photos need Firebase Storage configured.');
+      return;
+    }
+    photoUploadInProgress = true;
+    el.photoPickBtn.disabled = true;
+    el.photoRemoveBtn.hidden = true;
+    el.photoProgress.hidden = false;
+    el.photoProgressFill.style.width = '8%';
+    el.photoProgressLabel.textContent = 'Compressing…';
+
+    try {
+      const blob = await compressImage(file);
+      el.photoProgressFill.style.width = '20%';
+      el.photoProgressLabel.textContent = 'Uploading…';
+
+      const ref = photoRef(dayNum);
+      const task = ref.put(blob, { contentType: 'image/jpeg' });
+      await new Promise((resolve, reject) => {
+        task.on('state_changed', (snap) => {
+          const pct = 20 + (snap.bytesTransferred / snap.totalBytes) * 75;
+          el.photoProgressFill.style.width = `${pct}%`;
+        }, reject, resolve);
+      });
+
+      el.photoProgressFill.style.width = '100%';
+      el.photoProgressLabel.textContent = 'Done';
+
+      const url = await ref.getDownloadURL();
+      photoUrlCache.set(dayNum, url);
+
+      // Record in state
+      if (!state.photos) state.photos = {};
+      state.photos[dayNum] = { uploadedAt: new Date().toISOString() };
+
+      // Auto-check today's photo task if this is today's photo
+      const todayDay = journeyDayForToday();
+      if (dayNum === todayDay) {
+        const target = phaseDayFromJourneyDay(dayNum);
+        if (target && state.currentPhase === target.phaseId) {
+          if (!state.days[target.phaseId][target.dayIndex]) {
+            state.days[target.phaseId][target.dayIndex] = { tasks: {} };
+          }
+          state.days[target.phaseId][target.dayIndex].tasks.photo = true;
+        }
+      }
+
+      saveState();
+      renderPhotoSheet();
+      renderTasks(); renderHero(); renderCalendar(); renderJourney();
+      restartPhotoCarousel();
+      showToast(`Day ${dayNum} photo saved.`);
+    } catch (e) {
+      console.error('Photo upload failed', e);
+      const code = e?.code || '';
+      if (code === 'storage/unauthorized') {
+        showToast('Storage rules block this upload — check Firebase Storage Rules.');
+      } else if (code === 'storage/retry-limit-exceeded') {
+        showToast('Upload timed out. Try again.');
+      } else {
+        showToast('Upload failed — try a smaller image.');
+      }
+    } finally {
+      photoUploadInProgress = false;
+      el.photoPickBtn.disabled = false;
+      setTimeout(() => { el.photoProgress.hidden = true; }, 600);
+    }
+  }
+
+  async function removePhotoForDay(dayNum) {
+    askConfirm({
+      title: `Remove Day ${dayNum} photo?`,
+      body: 'This permanently deletes the photo from your storage.',
+      onConfirm: async () => {
+        try {
+          const ref = photoRef(dayNum);
+          if (ref) await ref.delete();
+        } catch (e) { console.warn('Delete failed (may not exist)', e); }
+        photoUrlCache.delete(dayNum);
+        if (state.photos) delete state.photos[dayNum];
+        saveState();
+        renderPhotoSheet();
+        renderTasks();
+        restartPhotoCarousel();
+        showToast('Photo removed.');
+      },
+    });
+  }
+
+  function openPhotoSheet(dayNum) {
+    photoSheetDay = dayNum ?? journeyDayForToday();
+    if (!photoSheetDay) {
+      showToast('Start your journey first.');
+      return;
+    }
+    el.photoSheet.setAttribute('aria-hidden', 'false');
+    renderPhotoSheet();
+  }
+
+  function closePhotoSheet() {
+    el.photoSheet.setAttribute('aria-hidden', 'true');
+    photoSheetDay = null;
+  }
+
+  async function renderPhotoSheet() {
+    const dayNum = photoSheetDay;
+    if (!dayNum) return;
+    const date = dateForJourneyDay(dayNum);
+    el.photoDayLine.textContent = date
+      ? `Day ${dayNum} · ${formatFullDate(date)}`
+      : `Day ${dayNum}`;
+    el.photoTitle.textContent = dayNum === journeyDayForToday() ? 'Progress photo' : `Day ${dayNum} photo`;
+
+    const has = state.photos && state.photos[dayNum];
+    el.photoRemoveBtn.hidden = !has;
+    el.photoPickBtn.textContent = has ? 'Replace photo' : 'Choose photo';
+
+    if (has) {
+      const url = await fetchPhotoURL(dayNum);
+      if (url) {
+        el.photoPreview.innerHTML = `<img src="${url}" alt="Day ${dayNum} progress photo" />`;
+      } else {
+        el.photoPreview.innerHTML = `
+          <div class="photo-preview-placeholder">
+            <span>Photo couldn't load.</span>
+          </div>`;
+      }
+    } else {
+      el.photoPreview.innerHTML = `
+        <div class="photo-preview-placeholder">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 8a2 2 0 0 1 2-2h2.5l1.5-2h6l1.5 2H19a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+            <circle cx="12" cy="13" r="3.5"/>
+          </svg>
+          <span>No photo for this day yet</span>
+        </div>`;
+    }
+  }
+
+  /* ----- Photo carousel ------------------------------------------------ */
+
+  let carouselTimer = null;
+  let carouselCancel = null;
+
+  function uploadedDays() {
+    return Object.keys(state.photos || {})
+      .map(Number)
+      .filter((n) => Number.isFinite(n) && n > 0)
+      .sort((a, b) => a - b);
+  }
+
+  function renderPhotoRail(activeDay) {
+    const todayDay = journeyDayForToday();
+    if (!todayDay) {
+      el.photosRailTrack.innerHTML = '';
+      return;
+    }
+    const items = [];
+    for (let d = 1; d <= todayDay; d++) {
+      const has = !!(state.photos && state.photos[d]);
+      const cls = ['photos-day-item'];
+      if (has) cls.push('has-photo');
+      if (d === activeDay) cls.push('active');
+      items.push(`
+        <button class="${cls.join(' ')}" type="button" data-action="select-photo-day" data-day="${d}">
+          <span class="photos-day-num">${d}</span>
+          ${has ? '<span class="photos-day-tiny">●</span>' : '<span class="photos-day-tiny">·</span>'}
+        </button>
+      `);
+    }
+    el.photosRailTrack.innerHTML = items.join('');
+    scrollRailTo(activeDay);
+  }
+
+  function scrollRailTo(day) {
+    requestAnimationFrame(() => {
+      const item = el.photosRailTrack.querySelector(`[data-day="${day}"]`);
+      const rail = el.photosRailTrack.parentElement;
+      if (!item || !rail) return;
+      const itemTop = item.offsetTop;
+      const itemH = item.offsetHeight;
+      const railH = rail.clientHeight;
+      const targetY = itemTop - railH / 2 + itemH / 2;
+      el.photosRailTrack.style.transform = `translateY(${Math.max(0, -targetY)}px)`;
+    });
+  }
+
+  async function showPhotoDay(day) {
+    if (!day) return;
+    const url = await fetchPhotoURL(day);
+    if (!url) return;
+    await preloadImage(url);
+    el.photosImage.classList.remove('shown');
+    requestAnimationFrame(() => {
+      el.photosImage.src = url;
+      el.photosImageWrap.classList.add('has-photo');
+      el.photosDayTag.textContent = `Day ${day}`;
+      requestAnimationFrame(() => el.photosImage.classList.add('shown'));
+    });
+    renderPhotoRail(day);
+  }
+
+  function clearCarousel() {
+    if (carouselTimer) { clearTimeout(carouselTimer); carouselTimer = null; }
+    if (carouselCancel) { carouselCancel(); carouselCancel = null; }
+  }
+
+  function setCarouselMode(label) {
+    if (!label) {
+      el.photosModePill.textContent = '—';
+      el.photosModePill.classList.add('hidden');
+      return;
+    }
+    el.photosModePill.textContent = label;
+    el.photosModePill.classList.remove('hidden');
+  }
+
+  async function runCarousel() {
+    clearCarousel();
+    const days = uploadedDays();
+    if (days.length === 0) {
+      el.photosImageWrap.classList.remove('has-photo');
+      el.photosImage.classList.remove('shown');
+      el.photosImage.removeAttribute('src');
+      setCarouselMode(null);
+      renderPhotoRail(null);
+      return;
+    }
+    if (days.length === 1) {
+      setCarouselMode(null);
+      await showPhotoDay(days[0]);
+      return;
+    }
+
+    let cancelled = false;
+    carouselCancel = () => { cancelled = true; };
+    const wait = (ms) => new Promise((r) => { carouselTimer = setTimeout(r, ms); });
+
+    while (!cancelled) {
+      // Phase 1: comparison — first vs latest
+      const first = days[0];
+      const last = days[days.length - 1];
+      setCarouselMode('Then vs Now');
+      await showPhotoDay(first);
+      if (cancelled) break;
+      await wait(2500);
+      if (cancelled) break;
+      await showPhotoDay(last);
+      if (cancelled) break;
+      await wait(2500);
+      if (cancelled) break;
+
+      // Phase 2: full sequence
+      setCarouselMode('Sequence');
+      for (const d of days) {
+        if (cancelled) break;
+        await showPhotoDay(d);
+        if (cancelled) break;
+        await wait(1100);
+      }
+    }
+  }
+
+  function restartPhotoCarousel() {
+    if (!state.startDate || !storage || !currentUser) {
+      clearCarousel();
+      el.photosImageWrap?.classList.remove('has-photo');
+      el.photosImage?.classList.remove('shown');
+      setCarouselMode(null);
+      renderPhotoRail(null);
+      return;
+    }
+    runCarousel();
   }
 
   function beginJourney() {
@@ -796,6 +1192,7 @@
     firebaseApp = firebase.initializeApp(window.firebaseConfig);
     firebaseAuth = firebase.auth();
     firestore = firebase.firestore();
+    if (firebase.storage) storage = firebase.storage();
     firebaseAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
     firestore.enablePersistence({ synchronizeTabs: true }).catch(() => {});
   }
@@ -820,6 +1217,8 @@
       currentUser = null;
       initialLoadDone = false;
       if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
+      clearCarousel();
+      photoUrlCache.clear();
       state = defaultState();
       appPhase = 'auth';
       render();
@@ -1049,6 +1448,26 @@
         break;
       }
       case 'reset-water-today': resetWaterToday(); break;
+      case 'open-photo': openPhotoSheet(); break;
+      case 'close-photo':
+        if (!photoUploadInProgress) closePhotoSheet();
+        break;
+      case 'pick-photo': el.photoInput.click(); break;
+      case 'remove-photo':
+        if (photoSheetDay) removePhotoForDay(photoSheetDay);
+        break;
+      case 'select-photo-day': {
+        const d = Number(t.dataset.day);
+        if (!d) break;
+        if (state.photos && state.photos[d]) {
+          clearCarousel();
+          setCarouselMode('Paused');
+          showPhotoDay(d);
+        } else {
+          openPhotoSheet(d);
+        }
+        break;
+      }
     }
   });
 
@@ -1081,6 +1500,13 @@
     addCustomWater(oz);
   });
 
+  // Photo file input
+  el.photoInput.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file && photoSheetDay) uploadPhotoForDay(photoSheetDay, file);
+    e.target.value = '';
+  });
+
   // Start date
   el.startDateInput.addEventListener('change', (e) => changeStartDate(e.target.value));
 
@@ -1096,6 +1522,7 @@
     if (e.key === 'Escape') {
       if (el.confirmModal.getAttribute('aria-hidden') === 'false') closeConfirm();
       else if (el.waterSheet.getAttribute('aria-hidden') === 'false') closeWaterSheet();
+      else if (el.photoSheet.getAttribute('aria-hidden') === 'false' && !photoUploadInProgress) closePhotoSheet();
       else if (el.settingsSheet.getAttribute('aria-hidden') === 'false') closeSettings();
     }
   });
@@ -1108,7 +1535,13 @@
     setTimeout(() => { render(); scheduleMidnightRefresh(); }, nextMidnight - now);
   }
   scheduleMidnightRefresh();
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      clearCarousel();
+    } else {
+      render();
+    }
+  });
 
   /* ----- Boot --------------------------------------------------------- */
 
