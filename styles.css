@@ -1145,6 +1145,40 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 /* Photo upload sheet
    ========================================================================== */
 
+.photo-day-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.photo-day-nav .photo-day-line {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  margin: 0;
+}
+
+.photo-day-nav-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  color: var(--text);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background 0.18s var(--ease), transform 0.12s var(--ease-spring), opacity 0.18s var(--ease);
+  flex-shrink: 0;
+}
+.photo-day-nav-btn:hover:not(:disabled) { background: var(--bg-tertiary); }
+.photo-day-nav-btn:active:not(:disabled) { transform: scale(0.92); }
+.photo-day-nav-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.photo-day-nav-btn svg { width: 18px; height: 18px; }
+
 .photo-day-line {
   font-size: 13px;
   font-weight: 600;

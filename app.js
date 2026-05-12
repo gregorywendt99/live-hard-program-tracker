@@ -301,6 +301,8 @@
     photoProgress: $('#photoProgress'),
     photoProgressFill: $('#photoProgressFill'),
     photoProgressLabel: $('#photoProgressLabel'),
+    photoPrevBtn: $('#photoPrevBtn'),
+    photoNextBtn: $('#photoNextBtn'),
     photosCard: $('#photosCard'),
     photosStage: $('#photosStage'),
     photosImage: $('#photosImage'),
@@ -837,11 +839,14 @@
   async function renderPhotoSheet() {
     const dayNum = photoSheetDay;
     if (!dayNum) return;
+    const todayDay = journeyDayForToday() || 1;
     const date = dateForJourneyDay(dayNum);
     el.photoDayLine.textContent = date
       ? `Day ${dayNum} · ${formatFullDate(date)}`
       : `Day ${dayNum}`;
-    el.photoTitle.textContent = dayNum === journeyDayForToday() ? 'Progress photo' : `Day ${dayNum} photo`;
+    el.photoTitle.textContent = dayNum === todayDay ? 'Progress photo' : `Day ${dayNum} photo`;
+    el.photoPrevBtn.disabled = dayNum <= 1;
+    el.photoNextBtn.disabled = dayNum >= todayDay;
 
     const has = state.photos && state.photos[dayNum];
     el.photoRemoveBtn.hidden = !has;
@@ -1460,6 +1465,20 @@
       case 'remove-photo':
         if (photoSheetDay) removePhotoForDay(photoSheetDay);
         break;
+      case 'photo-prev-day':
+        if (photoSheetDay && photoSheetDay > 1 && !photoUploadInProgress) {
+          photoSheetDay--;
+          renderPhotoSheet();
+        }
+        break;
+      case 'photo-next-day': {
+        const todayDay = journeyDayForToday() || 1;
+        if (photoSheetDay && photoSheetDay < todayDay && !photoUploadInProgress) {
+          photoSheetDay++;
+          renderPhotoSheet();
+        }
+        break;
+      }
       case 'select-photo-day': {
         const d = Number(t.dataset.day);
         if (!d) break;
