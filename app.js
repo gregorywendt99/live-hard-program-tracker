@@ -323,6 +323,7 @@
     photoAlignCalibrate: $('#photoAlignCalibrate'),
     photoAlignSaveBtn: $('#photoAlignSaveBtn'),
     photoAlignControls: $('#photoAlignControls'),
+    photoAlignPreviewBtn: $('#photoAlignPreviewBtn'),
     photoAlignMagnifier: $('#photoAlignMagnifier'),
     photoAlignMagnifierClone: $('#photoAlignMagnifierClone'),
     photoAlignMagnifierImg: $('#photoAlignMagnifierImg'),
@@ -1060,6 +1061,7 @@
         : [null, null, null],
       transform: { tx: 0, ty: 0, scale: 1, rotate: 0 },
       isCalibrating: false,
+      previewMode: false,
       drag: null,
     };
     el.photoAlignStage.hidden = false;
@@ -1072,10 +1074,6 @@
 
     fetchPhotoURL(photoSheetDay).then((url) => {
       if (url) el.photoAlignImg.src = url;
-      // If at least 2 pins are set, auto-align to current ref.
-      if (alignState && alignState.pins.filter(Boolean).length >= 2) {
-        autoAlignToReference();
-      }
       renderAlignView();
     });
 
@@ -1094,11 +1092,26 @@
     if (!alignState) return;
     const W = el.photoAlignCanvas.clientWidth;
     const H = el.photoAlignCanvas.clientHeight;
-    const { pins, transform, isCalibrating } = alignState;
+    const { pins, isCalibrating, previewMode } = alignState;
     const ref = defaultRef();
+    const placedCount = pins.filter(Boolean).length;
 
-    // Controls and reference targets are only relevant in their respective modes
+    // Effective transform:
+    //  - calibrating → the user's manual similarity transform
+    //  - previewing  → the best-fit similarity that lands pins on targets
+    //  - placing     → identity, so pins stay exactly where they're tapped
+    let transform = alignState.transform;
+    if (previewMode && !isCalibrating && placedCount >= 2) {
+      const refs = refsForCount(ref, placedCount);
+      const previewT = computeAutoTransformN(pins.filter(Boolean), refs, W, H);
+      if (previewT) transform = previewT;
+    }
+
     el.photoAlignControls.hidden = !isCalibrating;
+    el.photoAlignPreviewBtn.hidden = isCalibrating || placedCount < 2;
+    el.photoAlignPreviewBtn.textContent = previewMode ? 'Back to editing' : 'Preview alignment';
+
+    // Reference targets show in placing/preview modes (not while calibrating)
     const targets = [el.photoAlignTarget1, el.photoAlignTarget2, el.photoAlignTarget3];
     const refPts = [ref.r1, ref.r2, ref.r3];
     targets.forEach((tEl, i) => {
@@ -1132,7 +1145,8 @@
     });
 
     // Hint text
-    if (!pins[0]) el.photoAlignHint.textContent = 'Tap to place pin 1 (e.g. forehead)';
+    if (previewMode && !isCalibrating) el.photoAlignHint.textContent = 'Preview — tap "Back to editing" to adjust';
+    else if (!pins[0]) el.photoAlignHint.textContent = 'Tap to place pin 1 (e.g. forehead)';
     else if (!pins[1]) el.photoAlignHint.textContent = 'Tap to place pin 2 (e.g. chest)';
     else if (!pins[2]) el.photoAlignHint.textContent = 'Tap to place pin 3 (e.g. belly button)';
     else if (isCalibrating) el.photoAlignHint.textContent = 'Drag, zoom or rotate to frame';
@@ -1152,9 +1166,6 @@
     const firstEmpty = pins.findIndex((p) => !p);
     if (firstEmpty !== -1) {
       pins[firstEmpty] = photoPos;
-      if (!alignState.isCalibrating && pins.filter(Boolean).length >= 2) {
-        autoAlignToReference();
-      }
     } else {
       // All pins placed — move the nearest one
       let nearestIdx = 0;
@@ -1165,24 +1176,8 @@
         if (d < nearestDist) { nearestDist = d; nearestIdx = i; }
       });
       pins[nearestIdx] = photoPos;
-      if (!alignState.isCalibrating) autoAlignToReference();
     }
     renderAlignView();
-  }
-
-  function autoAlignToReference() {
-    if (!alignState) return;
-    const placed = alignState.pins.filter(Boolean);
-    if (placed.length < 2) return;
-    const W = el.photoAlignCanvas.clientWidth;
-    const H = el.photoAlignCanvas.clientHeight;
-    const ref = defaultRef();
-    const refs = refsForCount(ref, placed.length);
-    const t = computeAutoTransformN(placed, refs, W, H);
-    if (!t) return;
-    alignState.transform = t;
-    el.photoAlignRotateSlider.value = t.rotate * 180 / Math.PI;
-    el.photoAlignZoomSlider.value = Math.max(0.5, Math.min(3, t.scale));
   }
 
   function onAlignSlider() {
@@ -1197,9 +1192,12 @@
   function onAlignCalibrateToggle() {
     if (!alignState) return;
     alignState.isCalibrating = el.photoAlignCalibrate.checked;
-    if (!alignState.isCalibrating && alignState.pins.filter(Boolean).length >= 2) {
-      autoAlignToReference();
-    }
+    alignState.previewMode = false;
+    // Both modes start from identity: placing keeps it there so pins never
+    // drift; calibration lets the user move it from there with sliders/drag.
+    alignState.transform = { tx: 0, ty: 0, scale: 1, rotate: 0 };
+    el.photoAlignRotateSlider.value = 0;
+    el.photoAlignZoomSlider.value = 1;
     renderAlignView();
   }
 
@@ -1284,9 +1282,6 @@
     photoPos.x = Math.max(0, Math.min(1, photoPos.x));
     photoPos.y = Math.max(0, Math.min(1, photoPos.y));
     alignState.pins[pinIdx] = photoPos;
-    if (!alignState.isCalibrating && alignState.pins.filter(Boolean).length >= 2) {
-      autoAlignToReference();
-    }
     renderAlignView();
   }
 
@@ -1320,7 +1315,7 @@
       alignState && alignState.pins.every(Boolean) && alignState.isCalibrating;
 
     canvas.addEventListener('pointerdown', (e) => {
-      if (!alignState) return;
+      if (!alignState || alignState.previewMode) return;
       try { canvas.setPointerCapture(e.pointerId); } catch {}
       const rect = canvas.getBoundingClientRect();
       const cx = e.clientX - rect.left;
@@ -2056,6 +2051,12 @@
       case 'open-align': openAlignView(); break;
       case 'photo-align-cancel': closeAlignView(); break;
       case 'photo-align-save': savePhotoAlignment(); break;
+      case 'photo-align-preview':
+        if (alignState && alignState.pins.filter(Boolean).length >= 2) {
+          alignState.previewMode = !alignState.previewMode;
+          renderAlignView();
+        }
+        break;
       case 'photo-align-reset-rotate':
         if (alignState) {
           alignState.transform.rotate = 0;
