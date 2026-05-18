@@ -1489,17 +1489,21 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
    ========================================================================== */
 
 .photos-mode-pill {
-  padding: 4px 12px;
+  padding: 6px 14px;
   background: var(--accent-soft);
   color: var(--accent);
   border-radius: 980px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  transition: opacity 0.18s var(--ease);
+  cursor: pointer;
+  transition: opacity 0.18s var(--ease), background 0.18s var(--ease), transform 0.12s var(--ease-spring);
+  -webkit-tap-highlight-color: transparent;
 }
-.photos-mode-pill.hidden { opacity: 0; }
+.photos-mode-pill:hover { background: var(--accent-soft-strong); }
+.photos-mode-pill:active { transform: scale(0.95); }
+.photos-mode-pill.hidden { opacity: 0; pointer-events: none; }
 
 .photos-stage {
   display: grid;
@@ -1634,33 +1638,22 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   min-height: 120px;
   background: var(--bg-secondary);
   border-radius: var(--r-md);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg-quaternary) transparent;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
-
-.photos-rail::before,
-.photos-rail::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 36px;
-  pointer-events: none;
-  z-index: 2;
-}
-.photos-rail::before {
-  top: 0;
-  background: linear-gradient(to bottom, var(--bg-secondary), transparent);
-}
-.photos-rail::after {
-  bottom: 0;
-  background: linear-gradient(to top, var(--bg-secondary), transparent);
+.photos-rail::-webkit-scrollbar { width: 4px; }
+.photos-rail::-webkit-scrollbar-track { background: transparent; }
+.photos-rail::-webkit-scrollbar-thumb {
+  background: var(--bg-quaternary);
+  border-radius: 4px;
 }
 
 .photos-rail-track {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  transition: transform 0.45s var(--ease);
+  position: relative;
 }
 
 .photos-day-item {

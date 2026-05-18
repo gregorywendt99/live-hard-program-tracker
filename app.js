@@ -1448,6 +1448,10 @@
   let carouselTimer = null;
   let carouselCancel = null;
   let photoFrontLayer = 0; // index into [photosImageA, photosImageB]
+  let userCarouselMode = 'auto'; // 'auto' | 'sequence' | 'compare'
+  let carouselPaused = false;
+  let modeOverrideUntil = 0; // ms timestamp — pill shows the chosen mode until then
+  let lastPhaseLabel = '';   // the carousel's current live phase ('Then vs Now', 'Sequence', etc.)
 
   function photoLayers() { return [el.photosImageA, el.photosImageB]; }
 
@@ -1548,11 +1552,8 @@
       const item = el.photosRailTrack.querySelector(`[data-day="${day}"]`);
       const rail = el.photosRailTrack.parentElement;
       if (!item || !rail) return;
-      const itemTop = item.offsetTop;
-      const itemH = item.offsetHeight;
-      const railH = rail.clientHeight;
-      const targetY = itemTop - railH / 2 + itemH / 2;
-      el.photosRailTrack.style.transform = `translateY(${Math.max(0, -targetY)}px)`;
+      const targetTop = item.offsetTop - rail.clientHeight / 2 + item.offsetHeight / 2;
+      rail.scrollTop = Math.max(0, targetTop);
     });
   }
 
@@ -1616,13 +1617,60 @@
   }
 
   function setCarouselMode(label) {
-    if (!label) {
+    // The carousel calls this whenever it transitions between phases. It's
+    // routed through renderPillLabel which respects the user's mode
+    // (sequence/compare lock the label; auto follows the live phase).
+    lastPhaseLabel = label || '';
+    if (Date.now() < modeOverrideUntil) return; // override still showing
+    renderPillLabel();
+  }
+
+  function renderPillLabel() {
+    let text;
+    if (carouselPaused) text = 'Paused';
+    else if (userCarouselMode === 'sequence') text = 'Sequence';
+    else if (userCarouselMode === 'compare') text = 'Then vs Now';
+    else text = lastPhaseLabel; // auto — show whatever the carousel is doing right now
+    if (!text) {
       el.photosModePill.textContent = '—';
       el.photosModePill.classList.add('hidden');
-      return;
+    } else {
+      el.photosModePill.textContent = text;
+      el.photosModePill.classList.remove('hidden');
     }
-    el.photosModePill.textContent = label;
+  }
+
+  function cycleCarouselMode() {
+    const order = ['auto', 'compare', 'sequence'];
+    userCarouselMode = order[(order.indexOf(userCarouselMode) + 1) % order.length];
+    carouselPaused = false;
+
+    // Show the chosen mode for 500 ms so the user sees what they picked,
+    // then settle into the normal live label.
+    const overrideText =
+      userCarouselMode === 'auto' ? 'Auto'
+      : userCarouselMode === 'sequence' ? 'Sequence'
+      : 'Then vs Now';
+    el.photosModePill.textContent = overrideText;
     el.photosModePill.classList.remove('hidden');
+    modeOverrideUntil = Date.now() + 500;
+    setTimeout(() => {
+      if (Date.now() >= modeOverrideUntil) renderPillLabel();
+    }, 520);
+
+    restartPhotoCarousel();
+  }
+
+  function togglePauseCarousel() {
+    if (carouselPaused) {
+      carouselPaused = false;
+      restartPhotoCarousel();
+    } else {
+      carouselPaused = true;
+      clearCarousel();
+      el.photosImageWrap.style.removeProperty('--photo-fade-ms');
+      renderPillLabel();
+    }
   }
 
   async function runCarousel() {
@@ -1674,27 +1722,31 @@
     const compareFadeMs = 280;
 
     while (!cancelled) {
-      // Phase 1: comparison — first vs latest
-      setFade(compareFadeMs);
-      setCarouselMode('Then vs Now');
-      await showPhotoDay(days[0], { lightRail: true });
-      if (cancelled) break;
-      await wait(compareDwellMs);
-      if (cancelled) break;
-      await showPhotoDay(days[days.length - 1], { lightRail: true });
-      if (cancelled) break;
-      await wait(compareDwellMs);
-      if (cancelled) break;
+      // Phase 1: "Then vs Now" — skipped in pure sequence mode
+      if (userCarouselMode !== 'sequence') {
+        setFade(compareFadeMs);
+        setCarouselMode('Then vs Now');
+        await showPhotoDay(days[0], { lightRail: true });
+        if (cancelled) break;
+        await wait(compareDwellMs);
+        if (cancelled) break;
+        await showPhotoDay(days[days.length - 1], { lightRail: true });
+        if (cancelled) break;
+        await wait(compareDwellMs);
+        if (cancelled) break;
+      }
 
-      // Phase 2: full sequence (under 10s end-to-end), always cross-fading
-      setFade(seqFadeMs);
-      setCarouselMode('Sequence');
-      const seqOpts = { lightRail: true };
-      for (const d of days) {
-        if (cancelled) break;
-        await showPhotoDay(d, seqOpts);
-        if (cancelled) break;
-        await wait(seqPerPhoto);
+      // Phase 2: Sequence — skipped in pure compare mode
+      if (userCarouselMode !== 'compare') {
+        setFade(seqFadeMs);
+        setCarouselMode('Sequence');
+        const seqOpts = { lightRail: true };
+        for (const d of days) {
+          if (cancelled) break;
+          await showPhotoDay(d, seqOpts);
+          if (cancelled) break;
+          await wait(seqPerPhoto);
+        }
       }
     }
   }
@@ -1706,6 +1758,12 @@
       resetPhotoLayers();
       setCarouselMode(null);
       renderPhotoRail(null);
+      return;
+    }
+    if (carouselPaused) {
+      // Stay paused — don't restart the loop
+      clearCarousel();
+      renderPillLabel();
       return;
     }
     runCarousel();
@@ -2208,15 +2266,18 @@
         const d = Number(t.dataset.day);
         if (!d) break;
         if (state.photos && state.photos[d]) {
+          carouselPaused = true;
           clearCarousel();
           el.photosImageWrap.style.removeProperty('--photo-fade-ms');
-          setCarouselMode('Paused');
+          renderPillLabel();
           showPhotoDay(d);
         } else {
           openPhotoSheet(d);
         }
         break;
       }
+      case 'cycle-photo-mode': cycleCarouselMode(); break;
+      case 'toggle-photo-pause': togglePauseCarousel(); break;
     }
   });
 
