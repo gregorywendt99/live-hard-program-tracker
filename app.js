@@ -1752,11 +1752,15 @@
         setFade(seqFadeMs);
         setCarouselMode('Sequence');
         const seqOpts = { lightRail: true };
-        for (const d of days) {
+        const SEQ_INTRO_DWELL_MS = 1000; // pause on the starting frame
+        for (let i = 0; i < days.length; i++) {
           if (cancelled) break;
-          await showPhotoDay(d, seqOpts);
+          await showPhotoDay(days[i], seqOpts);
           if (cancelled) break;
-          await wait(seqPerPhoto);
+          // Hold on the first photo a bit longer so the user has time to
+          // register the starting point before the rapid playthrough.
+          const dwell = i === 0 ? Math.max(seqPerPhoto, SEQ_INTRO_DWELL_MS) : seqPerPhoto;
+          await wait(dwell);
         }
       }
     }
