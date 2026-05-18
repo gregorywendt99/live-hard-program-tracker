@@ -1517,6 +1517,7 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 
 .photos-image-wrap {
   position: relative;
+  width: 100%;
   aspect-ratio: var(--photo-aspect-ratio);
   border-radius: var(--r-md);
   background: var(--bg-secondary);
