@@ -329,7 +329,8 @@
     photoAlignMagnifierImg: $('#photoAlignMagnifierImg'),
     photosCard: $('#photosCard'),
     photosStage: $('#photosStage'),
-    photosImage: $('#photosImage'),
+    photosImageA: $('#photosImageA'),
+    photosImageB: $('#photosImageB'),
     photosImageWrap: $('.photos-image-wrap'),
     photosEmpty: $('#photosEmpty'),
     photosDayTag: $('#photosDayTag'),
@@ -1408,6 +1409,23 @@
 
   let carouselTimer = null;
   let carouselCancel = null;
+  let photoFrontLayer = 0; // index into [photosImageA, photosImageB]
+
+  function photoLayers() { return [el.photosImageA, el.photosImageB]; }
+
+  function resetPhotoLayers() {
+    for (const layer of photoLayers()) {
+      layer.style.transition = 'none';
+      layer.style.opacity = '0';
+      layer.style.transform = '';
+      layer.removeAttribute('src');
+    }
+    // restore CSS transitions on next frame
+    requestAnimationFrame(() => {
+      for (const layer of photoLayers()) layer.style.transition = '';
+    });
+    photoFrontLayer = 0;
+  }
 
   function uploadedDays() {
     return Object.keys(state.photos || {})
@@ -1493,16 +1511,44 @@
     const W = el.photosImageWrap.clientWidth;
     const H = el.photosImageWrap.clientHeight;
     const transformStr = alignment ? alignmentMatrixCSS(alignment, ref, W, H) : '';
-    el.photosImage.classList.remove('shown');
-    requestAnimationFrame(() => {
-      el.photosImage.src = url;
-      el.photosImage.style.transformOrigin = '0 0';
-      el.photosImage.style.transform = transformStr;
-      el.photosImageWrap.classList.add('has-photo');
-      el.photosDayTag.textContent = `Day ${day}`;
-      requestAnimationFrame(() => el.photosImage.classList.add('shown'));
-    });
+
+    // Two-layer crossfade: the back layer gets the new image and fades up
+    // OVER a fully-opaque front layer. The wrapper background never shows
+    // through, because the underneath layer stays at opacity 1 through the
+    // entire fade.
+    const layers = photoLayers();
+    const backIdx = 1 - photoFrontLayer;
+    const backEl = layers[backIdx];
+    const frontEl = layers[photoFrontLayer];
+
+    // Snap the current front layer to fully opaque (kills any in-progress
+    // fade-in from a previous call). Reset back layer to invisible so the
+    // new image isn't shown until we fade it in.
+    frontEl.style.transition = 'none';
+    frontEl.style.opacity = '1';
+    backEl.style.transition = 'none';
+    backEl.style.opacity = '0';
+    void backEl.offsetWidth; // flush the instant changes
+
+    // Restore transitions, set new src/transform on the back layer.
+    frontEl.style.transition = '';
+    backEl.style.transition = '';
+    backEl.src = url;
+    backEl.style.transform = transformStr;
+
+    el.photosImageWrap.classList.add('has-photo');
+    el.photosDayTag.textContent = `Day ${day}`;
     renderPhotoRail(day);
+
+    // Trigger the fade-in on the back layer next frame so the transition
+    // animates from 0 → 1 against the opaque front.
+    requestAnimationFrame(() => {
+      backEl.style.opacity = '1';
+    });
+
+    // Promote the back layer to "front" immediately so the next call uses
+    // the correct buffer.
+    photoFrontLayer = backIdx;
   }
 
   function clearCarousel() {
@@ -1525,8 +1571,7 @@
     const days = uploadedDays();
     if (days.length === 0) {
       el.photosImageWrap.classList.remove('has-photo');
-      el.photosImage.classList.remove('shown');
-      el.photosImage.removeAttribute('src');
+      resetPhotoLayers();
       setCarouselMode(null);
       renderPhotoRail(null);
       return;
@@ -1540,7 +1585,7 @@
     let cancelled = false;
     carouselCancel = () => { cancelled = true; };
     const wait = (ms) => new Promise((r) => { carouselTimer = setTimeout(r, ms); });
-    const setFade = (ms) => el.photosImage.style.setProperty('--photo-fade-ms', `${ms}ms`);
+    const setFade = (ms) => el.photosImageWrap.style.setProperty('--photo-fade-ms', `${ms}ms`);
 
     // Sequence is capped at 4 seconds total, regardless of photo count.
     // Per-photo dwell drops to a floor of 60 ms so the cycle stays brisk
@@ -1583,7 +1628,7 @@
     if (!state.startDate || !firestore || !currentUser) {
       clearCarousel();
       el.photosImageWrap?.classList.remove('has-photo');
-      el.photosImage?.classList.remove('shown');
+      resetPhotoLayers();
       setCarouselMode(null);
       renderPhotoRail(null);
       return;
@@ -2089,7 +2134,7 @@
         if (!d) break;
         if (state.photos && state.photos[d]) {
           clearCarousel();
-          el.photosImage.style.removeProperty('--photo-fade-ms');
+          el.photosImageWrap.style.removeProperty('--photo-fade-ms');
           setCarouselMode('Paused');
           showPhotoDay(d);
         } else {

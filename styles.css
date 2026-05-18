@@ -1524,14 +1524,17 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 
 .photos-image {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
   display: block;
   opacity: 0;
+  transform-origin: 0 0;
   transition: opacity var(--photo-fade-ms, 240ms) var(--ease);
+  pointer-events: none;
 }
-.photos-image.shown { opacity: 1; }
 
 .photos-empty {
   position: absolute;
