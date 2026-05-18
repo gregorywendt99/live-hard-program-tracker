@@ -1665,9 +1665,9 @@
       SEQ_PER_PHOTO_MAX,
       Math.max(60, Math.round(SEQ_TOTAL_MS / days.length))
     );
-    // Fade is half the dwell — enough to blend cleanly without losing the
-    // sense of distinct photos.
-    const seqFadeMs = Math.min(300, Math.max(60, Math.round(seqPerPhoto * 0.5)));
+    // Fade is a quarter of the dwell — short cross-fade, photos read as
+    // distinct frames with a quick blend between them.
+    const seqFadeMs = Math.min(200, Math.max(40, Math.round(seqPerPhoto * 0.25)));
 
     // "Then vs Now" gets a calmer dwell + smoother fade for contrast
     const compareDwellMs = 2000;
