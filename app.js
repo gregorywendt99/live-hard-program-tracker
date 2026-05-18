@@ -1647,7 +1647,9 @@
       SEQ_PER_PHOTO_MAX,
       Math.max(60, Math.round(SEQ_TOTAL_MS / days.length))
     );
-    const seqFadeMs = Math.min(220, Math.max(40, Math.round(seqPerPhoto * 0.4)));
+    // Longer fades — photos blend into each other through most of the
+    // dwell, so the transition feels continuous rather than punctuated.
+    const seqFadeMs = Math.min(400, Math.max(60, Math.round(seqPerPhoto * 0.7)));
 
     // "Then vs Now" gets a calmer dwell + smoother fade for contrast
     const compareDwellMs = 2000;
