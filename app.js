@@ -1085,6 +1085,7 @@
 
   function closeAlignView() {
     alignState = null;
+    hideMagnifier();
     el.photoAlignStage.hidden = true;
     el.photoAlignActions.hidden = true;
     el.photoSheetActions.style.display = '';
@@ -1257,17 +1258,27 @@
 
   function updateMagnifier(cx, cy) {
     if (el.photoAlignMagnifier.hidden) return;
-    const W = el.photoAlignCanvas.clientWidth;
-    const H = el.photoAlignCanvas.clientHeight;
     const M = MAGNIFIER_SIZE;
     const S = MAGNIFIER_ZOOM;
-    let mx = cx - M / 2;
-    let my = cy - M - 30;
-    if (my < 0) my = cy + 30;
-    mx = Math.max(0, Math.min(W - M, mx));
-    my = Math.max(0, Math.min(H - M, my));
-    el.photoAlignMagnifier.style.left = `${mx}px`;
-    el.photoAlignMagnifier.style.top = `${my}px`;
+
+    // Position relative to the viewport so the magnifier is never clipped by
+    // the canvas's overflow:hidden or by sheet scrolling. The clone inside
+    // still uses canvas-local coords to render the right zoomed region.
+    const rect = el.photoAlignCanvas.getBoundingClientRect();
+    const fingerVpX = rect.left + cx;
+    const fingerVpY = rect.top + cy;
+    const MARGIN = 12;
+    const GAP = 40;
+
+    let mxVp = fingerVpX - M / 2;
+    let myVp = fingerVpY - M - GAP;          // try above the finger
+    if (myVp < MARGIN) myVp = fingerVpY + GAP; // fall back to below
+    mxVp = Math.max(MARGIN, Math.min(window.innerWidth - M - MARGIN, mxVp));
+    myVp = Math.max(MARGIN, Math.min(window.innerHeight - M - MARGIN, myVp));
+
+    el.photoAlignMagnifier.style.left = `${mxVp}px`;
+    el.photoAlignMagnifier.style.top = `${myVp}px`;
+
     el.photoAlignMagnifierClone.style.transform =
       `translate(${M / 2}px, ${M / 2}px) scale(${S}) translate(${-cx}px, ${-cy}px)`;
     el.photoAlignMagnifierImg.style.transform = el.photoAlignImg.style.transform;
@@ -1307,6 +1318,13 @@
   }
 
   function setupAlignGestures() {
+    // Re-parent the magnifier to <body> so position:fixed positioning escapes
+    // any clipping or transformed ancestors. Without this it gets clipped by
+    // the canvas's overflow:hidden and by the sheet's scroll viewport.
+    if (el.photoAlignMagnifier && el.photoAlignMagnifier.parentElement !== document.body) {
+      document.body.appendChild(el.photoAlignMagnifier);
+    }
+
     const canvas = el.photoAlignCanvas;
     let drag = null;
     const MOVE_THRESHOLD = 6;
