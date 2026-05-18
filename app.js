@@ -776,10 +776,12 @@
     }
   }
 
+  const preloadedUrls = new Set();
   function preloadImage(url) {
+    if (preloadedUrls.has(url)) return Promise.resolve(true);
     return new Promise((resolve) => {
       const img = new Image();
-      img.onload = () => resolve(true);
+      img.onload = () => { preloadedUrls.add(url); resolve(true); };
       img.onerror = () => resolve(false);
       img.src = url;
     });
@@ -1418,9 +1420,9 @@
       layer.style.transition = 'none';
       layer.style.opacity = '0';
       layer.style.transform = '';
+      layer.style.zIndex = '';
       layer.removeAttribute('src');
     }
-    // restore CSS transitions on next frame
     requestAnimationFrame(() => {
       for (const layer of photoLayers()) layer.style.transition = '';
     });
@@ -1488,6 +1490,23 @@
       `${uploaded} of ${todayDay} photo${todayDay === 1 ? '' : 's'} uploaded · ${Math.max(0, todayDay - uploaded)} to catch up`;
   }
 
+  // Light-weight rail update used by the carousel hot path — toggles the
+  // `.active` class on existing items instead of rebuilding the whole rail's
+  // HTML each cycle (which was dropping frames at fast sequence rates).
+  function updatePhotoRailActive(activeDay) {
+    if (!el.photosRailTrack) return;
+    const current = el.photosRailTrack.querySelector('.photos-day-item.active');
+    if (current && current.dataset.day === String(activeDay)) {
+      updatePhotoSummary(activeDay);
+      return;
+    }
+    if (current) current.classList.remove('active');
+    const next = el.photosRailTrack.querySelector(`.photos-day-item[data-day="${activeDay}"]`);
+    if (next) next.classList.add('active');
+    scrollRailTo(activeDay);
+    updatePhotoSummary(activeDay);
+  }
+
   function scrollRailTo(day) {
     requestAnimationFrame(() => {
       const item = el.photosRailTrack.querySelector(`[data-day="${day}"]`);
@@ -1501,7 +1520,7 @@
     });
   }
 
-  async function showPhotoDay(day) {
+  async function showPhotoDay(day, opts = {}) {
     if (!day) return;
     const url = await fetchPhotoURL(day);
     if (!url) return;
@@ -1512,42 +1531,46 @@
     const H = el.photosImageWrap.clientHeight;
     const transformStr = alignment ? alignmentMatrixCSS(alignment, ref, W, H) : '';
 
-    // Two-layer crossfade: the back layer gets the new image and fades up
-    // OVER a fully-opaque front layer. The wrapper background never shows
-    // through, because the underneath layer stays at opacity 1 through the
-    // entire fade.
     const layers = photoLayers();
     const backIdx = 1 - photoFrontLayer;
     const backEl = layers[backIdx];
     const frontEl = layers[photoFrontLayer];
 
-    // Snap the current front layer to fully opaque (kills any in-progress
-    // fade-in from a previous call). Reset back layer to invisible so the
-    // new image isn't shown until we fade it in.
+    // Z-index swap so the back layer (new image) always paints on TOP of the
+    // front. Without this, half the cycles would fade an invisible layer
+    // underneath an opaque one and the image wouldn't appear to change.
+    backEl.style.zIndex = '2';
+    frontEl.style.zIndex = '1';
+
+    // Snap both layers to a clean known state (kills any in-flight fade).
     frontEl.style.transition = 'none';
     frontEl.style.opacity = '1';
     backEl.style.transition = 'none';
     backEl.style.opacity = '0';
-    void backEl.offsetWidth; // flush the instant changes
+    void backEl.offsetWidth; // flush
 
-    // Restore transitions, set new src/transform on the back layer.
-    frontEl.style.transition = '';
-    backEl.style.transition = '';
+    // Load the new image on the back layer (still invisible)
     backEl.src = url;
     backEl.style.transform = transformStr;
 
     el.photosImageWrap.classList.add('has-photo');
     el.photosDayTag.textContent = `Day ${day}`;
-    renderPhotoRail(day);
+    if (opts.lightRail) updatePhotoRailActive(day);
+    else renderPhotoRail(day);
 
-    // Trigger the fade-in on the back layer next frame so the transition
-    // animates from 0 → 1 against the opaque front.
-    requestAnimationFrame(() => {
+    if (opts.instant) {
+      // Hard swap — opacity flips to 1 with no transition, so the new image
+      // appears immediately while the old layer stays at opacity 1
+      // underneath. No fade duration, no flicker.
       backEl.style.opacity = '1';
-    });
+    } else {
+      // Crossfade — restore the CSS transition and animate to 1
+      backEl.style.transition = '';
+      requestAnimationFrame(() => {
+        backEl.style.opacity = '1';
+      });
+    }
 
-    // Promote the back layer to "front" immediately so the next call uses
-    // the correct buffer.
     photoFrontLayer = backIdx;
   }
 
@@ -1589,11 +1612,13 @@
 
     // Sequence is capped at 4 seconds total, regardless of photo count.
     // Per-photo dwell drops to a floor of 60 ms so the cycle stays brisk
-    // without melting. Fade duration scales down with dwell so it never
-    // outruns the swap.
+    // without melting. Below 200 ms we hard-swap (no fade) — the fade would
+    // be imperceptible at that speed and skipping it removes the per-frame
+    // transition work, which keeps the swap in lockstep with the rail.
     const SEQ_TOTAL_MS = 4000;
     const seqPerPhoto = Math.max(60, Math.round(SEQ_TOTAL_MS / days.length));
-    const seqFadeMs = Math.min(180, Math.max(40, Math.round(seqPerPhoto * 0.45)));
+    const useHardSwap = seqPerPhoto < 200;
+    const seqFadeMs = useHardSwap ? 0 : Math.min(180, Math.max(60, Math.round(seqPerPhoto * 0.4)));
 
     // "Then vs Now" gets a calmer dwell + smoother fade for contrast
     const compareDwellMs = 2000;
@@ -1603,21 +1628,22 @@
       // Phase 1: comparison — first vs latest
       setFade(compareFadeMs);
       setCarouselMode('Then vs Now');
-      await showPhotoDay(days[0]);
+      await showPhotoDay(days[0], { lightRail: true });
       if (cancelled) break;
       await wait(compareDwellMs);
       if (cancelled) break;
-      await showPhotoDay(days[days.length - 1]);
+      await showPhotoDay(days[days.length - 1], { lightRail: true });
       if (cancelled) break;
       await wait(compareDwellMs);
       if (cancelled) break;
 
       // Phase 2: full sequence (under 4s end-to-end)
-      setFade(seqFadeMs);
+      if (!useHardSwap) setFade(seqFadeMs);
       setCarouselMode('Sequence');
+      const seqOpts = { lightRail: true, instant: useHardSwap };
       for (const d of days) {
         if (cancelled) break;
-        await showPhotoDay(d);
+        await showPhotoDay(d, seqOpts);
         if (cancelled) break;
         await wait(seqPerPhoto);
       }
