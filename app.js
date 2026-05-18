@@ -1605,6 +1605,10 @@
       return;
     }
 
+    // Build the rail once up front so updatePhotoRailActive() can just
+    // toggle classes inside the hot loop instead of rebuilding HTML.
+    renderPhotoRail(days[0]);
+
     let cancelled = false;
     carouselCancel = () => { cancelled = true; };
     const wait = (ms) => new Promise((r) => { carouselTimer = setTimeout(r, ms); });
