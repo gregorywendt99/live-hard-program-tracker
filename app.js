@@ -337,6 +337,10 @@
     photosRailTrack: $('#photosRailTrack'),
     photosModePill: $('#photosModePill'),
     photosSide: $('.photos-side'),
+    photosDownloadBtn: $('#photosDownloadBtn'),
+    videoSheet: $('#videoSheet'),
+    videoStatus: $('#videoStatus'),
+    videoProgressFill: $('#videoProgressFill'),
     photosSummary: $('#photosSummary'),
     photosSummaryDay: $('#photosSummaryDay'),
     photosSummaryDate: $('#photosSummaryDate'),
@@ -1029,22 +1033,29 @@
     return out;
   }
 
-  // For the carousel: build a CSS matrix string that bakes everything in.
-  // Always a similarity transform (translate + rotate + uniform scale) so
-  // the body never stretches or shears — best-fit for any number of pins.
-  function alignmentMatrixCSS(alignment, ref, W, H) {
+  // Returns the affine matrix that lays out a photo at W×H pixels with its
+  // pins mapped to the reference positions. Similarity transform only
+  // (translate + rotate + uniform scale), no stretching.
+  function alignmentMatrixObject(alignment, ref, W, H) {
     const pts = pointsFromAlignment(alignment);
-    if (pts.length < 2 || !ref) return '';
+    if (pts.length < 2 || !ref) return null;
     const refs = refsForCount(ref, pts.length);
     const t = computeAutoTransformN(pts, refs, W, H);
-    if (!t) return '';
+    if (!t) return null;
     const cx = W / 2, cy = H / 2;
     const cos = Math.cos(t.rotate) * t.scale;
     const sin = Math.sin(t.rotate) * t.scale;
-    const a = cos, b = sin, c = -sin, d = cos;
-    const e = t.tx + cx - cos * cx + sin * cy;
-    const f = t.ty + cy - sin * cx - cos * cy;
-    return `matrix(${a}, ${b}, ${c}, ${d}, ${e}, ${f})`;
+    return {
+      a: cos, b: sin, c: -sin, d: cos,
+      e: t.tx + cx - cos * cx + sin * cy,
+      f: t.ty + cy - sin * cx - cos * cy,
+    };
+  }
+
+  // For the carousel: serialize the matrix into a CSS matrix() string.
+  function alignmentMatrixCSS(alignment, ref, W, H) {
+    const m = alignmentMatrixObject(alignment, ref, W, H);
+    return m ? `matrix(${m.a}, ${m.b}, ${m.c}, ${m.d}, ${m.e}, ${m.f})` : '';
   }
 
   function openAlignView() {
@@ -1513,6 +1524,16 @@
     el.photosRailTrack.innerHTML = items.join('');
     scrollRailTo(activeDay || todayDay);
     updatePhotoSummary(activeDay || todayDay);
+    updateDownloadButtonState();
+  }
+
+  function updateDownloadButtonState() {
+    if (!el.photosDownloadBtn) return;
+    const count = uploadedDays().length;
+    el.photosDownloadBtn.disabled = count < 2;
+    el.photosDownloadBtn.title = count < 2
+      ? 'Upload at least 2 photos to download a video'
+      : 'Download as video';
   }
 
   function updatePhotoSummary(day) {
@@ -1764,6 +1785,270 @@
         }
       }
     }
+  }
+
+  /* ----- Video export ------------------------------------------------ */
+
+  let videoRecorder = null;
+  let videoCancelled = false;
+
+  function pickVideoMime() {
+    if (typeof MediaRecorder === 'undefined') return null;
+    const candidates = [
+      { mime: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', ext: 'mp4' },
+      { mime: 'video/mp4;codecs=avc1', ext: 'mp4' },
+      { mime: 'video/mp4', ext: 'mp4' },
+      { mime: 'video/webm;codecs=vp9', ext: 'webm' },
+      { mime: 'video/webm;codecs=vp8', ext: 'webm' },
+      { mime: 'video/webm', ext: 'webm' },
+    ];
+    for (const c of candidates) {
+      try { if (MediaRecorder.isTypeSupported(c.mime)) return c; } catch {}
+    }
+    return null;
+  }
+
+  function loadImage(url) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Image failed to load'));
+      img.src = url;
+    });
+  }
+
+  function drawImageCover(ctx, img, dx, dy, dw, dh) {
+    const sw = img.naturalWidth || img.width;
+    const sh = img.naturalHeight || img.height;
+    if (!sw || !sh) return;
+    const sourceRatio = sw / sh;
+    const targetRatio = dw / dh;
+    let sx, sy, sWidth, sHeight;
+    if (sourceRatio > targetRatio) {
+      sHeight = sh;
+      sWidth = sh * targetRatio;
+      sx = (sw - sWidth) / 2;
+      sy = 0;
+    } else {
+      sWidth = sw;
+      sHeight = sw / targetRatio;
+      sx = 0;
+      sy = (sh - sHeight) / 2;
+    }
+    ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, dw, dh);
+  }
+
+  function drawLabel(ctx, text, W, H) {
+    if (!text) return;
+    ctx.save();
+    const fontSize = Math.max(20, Math.round(H * 0.045));
+    ctx.font = `700 ${fontSize}px -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif`;
+    ctx.textBaseline = 'middle';
+    const padX = Math.round(fontSize * 0.7);
+    const padY = Math.round(fontSize * 0.4);
+    const textW = ctx.measureText(text).width;
+    const pillW = textW + padX * 2;
+    const pillH = fontSize + padY * 2;
+    const x = Math.round(H * 0.025);
+    const y = H - x - pillH;
+    const r = pillH / 2;
+    // Pill background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + pillW, y, x + pillW, y + r, r);
+    ctx.arcTo(x + pillW, y + pillH, x + pillW - r, y + pillH, r);
+    ctx.arcTo(x, y + pillH, x, y + pillH - r, r);
+    ctx.arcTo(x, y, x + r, y, r);
+    ctx.closePath();
+    ctx.fill();
+    // White text
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, x + padX, y + pillH / 2);
+    ctx.restore();
+  }
+
+  function drawVideoFrame(ctx, img, alignment, ref, W, H, label) {
+    // Black backdrop (visible if the photo doesn't cover the whole frame
+    // after alignment — e.g. heavy crops or rotations)
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    const m = alignment ? alignmentMatrixObject(alignment, ref, W, H) : null;
+    if (m) ctx.setTransform(m.a, m.b, m.c, m.d, m.e, m.f);
+    drawImageCover(ctx, img, 0, 0, W, H);
+    ctx.restore();
+    drawLabel(ctx, label, W, H);
+  }
+
+  function openVideoSheet() {
+    videoCancelled = false;
+    el.videoSheet.setAttribute('aria-hidden', 'false');
+    setVideoProgress(0, 'Preparing photos…');
+  }
+
+  function closeVideoSheet() {
+    el.videoSheet.setAttribute('aria-hidden', 'true');
+  }
+
+  function setVideoProgress(pct, status) {
+    el.videoProgressFill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    if (status) el.videoStatus.textContent = status;
+  }
+
+  function cancelVideoExport() {
+    videoCancelled = true;
+    if (videoRecorder && videoRecorder.state !== 'inactive') {
+      try { videoRecorder.stop(); } catch {}
+    }
+    closeVideoSheet();
+  }
+
+  async function downloadProgressVideo() {
+    const fmt = pickVideoMime();
+    if (!fmt) {
+      showToast('Video export isn\'t supported in this browser.');
+      return;
+    }
+    const days = uploadedDays();
+    if (days.length < 2) {
+      showToast('You need at least 2 photos to make a video.');
+      return;
+    }
+
+    openVideoSheet();
+
+    // Compute canvas size — target 720p on the short edge
+    const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
+      ? state.photoAspectRatio
+      : (4 / 5);
+    let W, H;
+    if (aspect >= 1) { W = 1280; H = Math.round(1280 / aspect); }
+    else { W = 720; H = Math.round(720 / aspect); }
+    if (H % 2) H++;
+    if (W % 2) W++;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    // Fill black so the first captured frame isn't transparent
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, W, H);
+
+    // Pre-load every uploaded photo (with progress)
+    const photos = {};
+    for (let i = 0; i < days.length; i++) {
+      if (videoCancelled) return;
+      const d = days[i];
+      try {
+        const url = await fetchPhotoURL(d);
+        if (url) photos[d] = await loadImage(url);
+      } catch { /* ignore */ }
+      setVideoProgress(Math.round((i + 1) / days.length * 25), `Loading photos (${i + 1}/${days.length})…`);
+    }
+    if (videoCancelled) return;
+
+    // Phase day number helper (same numbering as the rail)
+    const phaseStartJourney = state.phaseStartDate
+      ? daysBetween(state.startDate, state.phaseStartDate) + 1
+      : 1;
+    const phaseDay = (d) => d - phaseStartJourney + 1;
+    const ref = defaultRef();
+
+    // Pacing
+    const SEQ_TOTAL_MS = 8000;
+    const seqPerPhoto = Math.max(120, Math.min(450, Math.round(SEQ_TOTAL_MS / days.length)));
+    const SEQ_INTRO_MS = 1000;
+    const THEN_NOW_MS = 2000;
+    const totalEstMs = SEQ_INTRO_MS + (days.length - 1) * seqPerPhoto + THEN_NOW_MS * 2;
+
+    // Set up the recorder
+    const stream = canvas.captureStream(30);
+    let chunks = [];
+    try {
+      videoRecorder = new MediaRecorder(stream, {
+        mimeType: fmt.mime,
+        videoBitsPerSecond: 4_500_000,
+      });
+    } catch (e) {
+      showToast('Could not start the recorder.');
+      closeVideoSheet();
+      return;
+    }
+    videoRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    const finished = new Promise((resolve) => { videoRecorder.onstop = resolve; });
+    videoRecorder.start(250); // emit a chunk every 250ms
+
+    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+    const elapsed = { ms: 0 };
+    const tick = (ms, status) => {
+      elapsed.ms += ms;
+      const pct = 25 + Math.min(70, (elapsed.ms / totalEstMs) * 70);
+      setVideoProgress(pct, status);
+    };
+
+    try {
+      // Phase 1: Sequence with day labels
+      for (let i = 0; i < days.length; i++) {
+        if (videoCancelled) break;
+        const d = days[i];
+        const img = photos[d];
+        if (!img) continue;
+        drawVideoFrame(ctx, img, state.photos[d]?.alignment, ref, W, H, `Day ${phaseDay(d)}`);
+        const dwell = i === 0 ? SEQ_INTRO_MS : seqPerPhoto;
+        await delay(dwell);
+        tick(dwell, `Recording sequence (${i + 1}/${days.length})…`);
+      }
+
+      // Phase 2: Then
+      if (!videoCancelled) {
+        const firstD = days[0];
+        const firstImg = photos[firstD];
+        if (firstImg) {
+          drawVideoFrame(ctx, firstImg, state.photos[firstD]?.alignment, ref, W, H, 'THEN');
+          await delay(THEN_NOW_MS);
+          tick(THEN_NOW_MS, 'Recording THEN…');
+        }
+      }
+
+      // Phase 3: Now
+      if (!videoCancelled) {
+        const lastD = days[days.length - 1];
+        const lastImg = photos[lastD];
+        if (lastImg) {
+          drawVideoFrame(ctx, lastImg, state.photos[lastD]?.alignment, ref, W, H, 'NOW');
+          await delay(THEN_NOW_MS);
+          tick(THEN_NOW_MS, 'Recording NOW…');
+        }
+      }
+    } finally {
+      try { if (videoRecorder.state !== 'inactive') videoRecorder.stop(); } catch {}
+      await finished;
+      videoRecorder = null;
+    }
+
+    if (videoCancelled) {
+      closeVideoSheet();
+      return;
+    }
+
+    setVideoProgress(98, 'Finalizing…');
+    const blob = new Blob(chunks, { type: fmt.mime });
+    chunks = null;
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `live-hard-progress-${todayISO()}.${fmt.ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+
+    setVideoProgress(100, 'Done!');
+    setTimeout(() => closeVideoSheet(), 600);
+    showToast('Video saved.');
   }
 
   function restartPhotoCarousel() {
@@ -2293,6 +2578,8 @@
       }
       case 'cycle-photo-mode': cycleCarouselMode(); break;
       case 'toggle-photo-pause': togglePauseCarousel(); break;
+      case 'download-video': downloadProgressVideo(); break;
+      case 'cancel-video': cancelVideoExport(); break;
     }
   });
 
@@ -2351,6 +2638,7 @@
   // Escape key
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if (el.videoSheet?.getAttribute('aria-hidden') === 'false') { cancelVideoExport(); return; }
       if (el.confirmModal.getAttribute('aria-hidden') === 'false') closeConfirm();
       else if (alignState) closeAlignView();
       else if (el.waterSheet.getAttribute('aria-hidden') === 'false') closeWaterSheet();
