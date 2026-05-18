@@ -1838,6 +1838,275 @@
     ctx.drawImage(img, sx, sy, sWidth, sHeight, dx, dy, dw, dh);
   }
 
+  // Read the live CSS theme tokens so the exported frame matches whatever
+  // theme the user is currently on (light, dark, or auto-resolved).
+  function getThemeTokens() {
+    const cs = window.getComputedStyle(document.documentElement);
+    const get = (name, fb) => {
+      const v = cs.getPropertyValue(name);
+      return (v && v.trim()) || fb;
+    };
+    return {
+      bg:               get('--bg', '#000'),
+      bgElevated:       get('--bg-elevated', '#1c1c1e'),
+      bgSecondary:      get('--bg-secondary', 'rgba(118,118,128,0.24)'),
+      bgTertiary:       get('--bg-tertiary', 'rgba(118,118,128,0.32)'),
+      text:             get('--text', '#f5f5f7'),
+      textSecondary:    get('--text-secondary', '#a1a1a6'),
+      textTertiary:     get('--text-tertiary', '#6e6e73'),
+      accent:           get('--accent', '#ff9f0a'),
+      accentSoft:       get('--accent-soft', 'rgba(255,159,10,0.16)'),
+      accentSoftStrong: get('--accent-soft-strong', 'rgba(255,159,10,0.28)'),
+      separator:        get('--separator', 'rgba(84,84,88,0.4)'),
+    };
+  }
+
+  function pathRoundedRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + rr, rr);
+    ctx.arcTo(x + w, y + h, x + w - rr, y + h, rr);
+    ctx.arcTo(x, y + h, x, y + h - rr, rr);
+    ctx.arcTo(x, y, x + rr, y, rr);
+    ctx.closePath();
+  }
+
+  const SYS_FONT = '-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Arial, sans-serif';
+
+  function drawTimelineFrame(ctx, opts) {
+    const {
+      W, H, theme, currentDay, headline, modePill, img, alignment,
+      allDays, photoSet, ref, phaseStartJourney, phaseName, phaseDuration,
+    } = opts;
+
+    // 1. Page background (matches body bg)
+    ctx.fillStyle = theme.bg;
+    ctx.fillRect(0, 0, W, H);
+
+    // 2. Card
+    const cardPad = 24;
+    const cardX = cardPad, cardY = cardPad;
+    const cardW = W - cardPad * 2, cardH = H - cardPad * 2;
+    fillRect(ctx, cardX, cardY, cardW, cardH, 22, theme.bgElevated);
+
+    // 3. Card padding for inner content
+    const padding = 28;
+    const innerX = cardX + padding;
+    const innerY = cardY + padding;
+    const innerW = cardW - padding * 2;
+    const innerH = cardH - padding * 2;
+
+    // 4. Header (eyebrow + title + mode pill)
+    drawHeaderRow(ctx, innerX, innerY, innerW, theme, modePill);
+    const HEADER_H = 80;
+
+    // 5. Stage area below header
+    const stageY = innerY + HEADER_H;
+    const stageH = innerH - HEADER_H;
+
+    // 5a. Photo on the left — fits stage height, width derived from aspect
+    const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
+      ? state.photoAspectRatio : (4 / 5);
+    let imgH = stageH;
+    let imgW = imgH * aspect;
+    const maxImgWFraction = 0.42;
+    if (imgW > innerW * maxImgWFraction) {
+      imgW = innerW * maxImgWFraction;
+      imgH = imgW / aspect;
+    }
+    const imgX = innerX;
+    const imgY = stageY + (stageH - imgH) / 2;
+    drawPhotoBlock(ctx, imgX, imgY, imgW, imgH, img, alignment, ref, theme);
+
+    // 5b. Side panel on the right
+    const sideGap = 20;
+    const sideX = imgX + imgW + sideGap;
+    const sideW = innerW - imgW - sideGap;
+    const summaryH = 156;
+    drawSummaryBlock(ctx, sideX, stageY, sideW, summaryH, theme, {
+      headline, currentDay, phaseStartJourney, phaseName, phaseDuration,
+      uploadedCount: photoSet.size, todayDay: allDays[allDays.length - 1] || 0,
+    });
+    const railY = stageY + summaryH + 12;
+    const railH = stageH - summaryH - 12;
+    drawRailBlock(ctx, sideX, railY, sideW, railH, theme, {
+      currentDay, allDays, photoSet, phaseStartJourney,
+    });
+  }
+
+  function fillRect(ctx, x, y, w, h, r, color) {
+    ctx.save();
+    pathRoundedRect(ctx, x, y, w, h, r);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHeaderRow(ctx, x, y, w, theme, modePill) {
+    ctx.textBaseline = 'top';
+    // Eyebrow PROGRESS
+    ctx.fillStyle = theme.textTertiary;
+    ctx.font = `600 12px ${SYS_FONT}`;
+    ctx.fillText('PROGRESS', x, y);
+    // Title
+    ctx.fillStyle = theme.text;
+    ctx.font = `700 26px ${SYS_FONT}`;
+    ctx.fillText('Photo timeline', x, y + 22);
+    // Mode pill (top-right)
+    if (modePill) drawModePill(ctx, x + w, y + 14, modePill.toUpperCase(), theme);
+  }
+
+  function drawModePill(ctx, rightX, y, text, theme) {
+    const fontSize = 12;
+    ctx.font = `700 ${fontSize}px ${SYS_FONT}`;
+    ctx.textBaseline = 'middle';
+    const padX = 16, padY = 10;
+    const textW = ctx.measureText(text).width;
+    const pillW = textW + padX * 2;
+    const pillH = fontSize + padY * 2;
+    const x = rightX - pillW;
+    fillRect(ctx, x, y, pillW, pillH, pillH / 2, theme.accentSoft);
+    ctx.fillStyle = theme.accent;
+    ctx.fillText(text, x + padX, y + pillH / 2 + 1);
+  }
+
+  function drawPhotoBlock(ctx, x, y, w, h, img, alignment, ref, theme) {
+    ctx.save();
+    pathRoundedRect(ctx, x, y, w, h, 14);
+    ctx.clip();
+    ctx.fillStyle = theme.bgSecondary;
+    ctx.fillRect(x, y, w, h);
+    if (img) {
+      ctx.save();
+      ctx.translate(x, y);
+      const m = alignment ? alignmentMatrixObject(alignment, ref, w, h) : null;
+      if (m) ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+      drawImageCover(ctx, img, 0, 0, w, h);
+      ctx.restore();
+    }
+    ctx.restore();
+  }
+
+  function drawSummaryBlock(ctx, x, y, w, h, theme, data) {
+    fillRect(ctx, x, y, w, h, 14, theme.bgSecondary);
+    const padX = 20, padY = 20;
+    const innerX = x + padX;
+    let cy = y + padY;
+    ctx.textBaseline = 'top';
+
+    // Headline ("Day N" or "THEN" / "NOW")
+    ctx.fillStyle = theme.text;
+    ctx.font = `700 34px ${SYS_FONT}`;
+    ctx.fillText(data.headline, innerX, cy);
+    cy += 42;
+
+    // Date
+    ctx.fillStyle = theme.textSecondary;
+    ctx.font = `500 14px ${SYS_FONT}`;
+    if (state.startDate) {
+      const dateISO = addDays(state.startDate, data.currentDay - 1);
+      ctx.fillText(formatFullDate(dateISO), innerX, cy);
+    }
+    cy += 24;
+
+    // Phase line (e.g. "75 HARD · DAY 5 OF 75")
+    if (data.phaseName) {
+      const phaseDayNum = data.currentDay - data.phaseStartJourney + 1;
+      ctx.fillStyle = theme.accent;
+      ctx.font = `700 11px ${SYS_FONT}`;
+      ctx.fillText(`${data.phaseName.toUpperCase()} · DAY ${phaseDayNum} OF ${data.phaseDuration}`, innerX, cy);
+      cy += 20;
+    }
+
+    // Divider + stats
+    ctx.fillStyle = theme.separator;
+    ctx.fillRect(innerX, cy + 4, w - padX * 2, 1);
+    cy += 14;
+    ctx.fillStyle = theme.textTertiary;
+    ctx.font = `500 12px ${SYS_FONT}`;
+    const todayDay = data.todayDay;
+    const remaining = Math.max(0, todayDay - data.uploadedCount);
+    const stats = `${data.uploadedCount} of ${todayDay} photo${todayDay === 1 ? '' : 's'} uploaded · ${remaining} to catch up`;
+    ctx.fillText(stats, innerX, cy);
+  }
+
+  function drawRailBlock(ctx, x, y, w, h, theme, data) {
+    ctx.save();
+    pathRoundedRect(ctx, x, y, w, h, 14);
+    ctx.clip();
+    ctx.fillStyle = theme.bgSecondary;
+    ctx.fillRect(x, y, w, h);
+
+    const itemH = 44;
+    const allDays = data.allDays;
+    const currentIdx = allDays.indexOf(data.currentDay);
+    const totalH = allDays.length * itemH;
+    let scrollY = currentIdx * itemH - h / 2 + itemH / 2;
+    scrollY = Math.max(0, Math.min(Math.max(0, totalH - h), scrollY));
+
+    const startIdx = Math.max(0, Math.floor(scrollY / itemH));
+    const endIdx = Math.min(allDays.length, Math.ceil((scrollY + h) / itemH) + 1);
+
+    for (let i = startIdx; i < endIdx; i++) {
+      const day = allDays[i];
+      const itemY = y + (i * itemH - scrollY);
+      drawRailItem(ctx, x, itemY, w, itemH, day, day === data.currentDay,
+        data.photoSet.has(day), data.phaseStartJourney, theme);
+    }
+
+    // Top/bottom fade gradients for the wheel feel
+    const fadeH = 36;
+    const topGrad = ctx.createLinearGradient(0, y, 0, y + fadeH);
+    topGrad.addColorStop(0, theme.bgSecondary);
+    topGrad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = topGrad;
+    ctx.fillRect(x, y, w, fadeH);
+    const botGrad = ctx.createLinearGradient(0, y + h - fadeH, 0, y + h);
+    botGrad.addColorStop(0, 'rgba(0,0,0,0)');
+    botGrad.addColorStop(1, theme.bgSecondary);
+    ctx.fillStyle = botGrad;
+    ctx.fillRect(x, y + h - fadeH, w, fadeH);
+    ctx.restore();
+  }
+
+  function drawRailItem(ctx, x, y, w, h, day, isActive, hasPhoto, phaseStartJourney, theme) {
+    if (isActive) {
+      ctx.fillStyle = theme.accentSoft;
+      ctx.fillRect(x, y, w, h);
+    }
+    const padding = 18;
+    const cy = y + h / 2;
+    ctx.textBaseline = 'middle';
+    const phaseDay = day - phaseStartJourney + 1;
+
+    // Day number
+    ctx.fillStyle = isActive ? theme.accent : theme.text;
+    ctx.font = `700 15px ${SYS_FONT}`;
+    ctx.fillText(String(phaseDay), x + padding, cy + 1);
+
+    // Date — start ~52 px in to leave room for 2-digit day numbers
+    ctx.fillStyle = isActive ? theme.accent : theme.textSecondary;
+    ctx.font = `500 13px ${SYS_FONT}`;
+    if (state.startDate) {
+      ctx.fillText(formatShortDate(addDays(state.startDate, day - 1)), x + padding + 52, cy + 1);
+    }
+
+    // Dot (right side)
+    const dotR = 4;
+    const dotX = x + w - padding - dotR;
+    ctx.beginPath();
+    ctx.arc(dotX, cy, dotR, 0, Math.PI * 2);
+    if (hasPhoto || isActive) {
+      ctx.fillStyle = theme.accent;
+    } else {
+      ctx.fillStyle = theme.textTertiary;
+      ctx.globalAlpha = 0.35;
+    }
+    ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
   function drawLabel(ctx, text, W, H) {
     if (!text) return;
     ctx.save();
@@ -1918,19 +2187,11 @@
 
     openVideoSheet();
 
-    // Compute canvas size — 720p on the short edge. Source photos are
-    // compressed to ~1200 px long edge (≈675 px short edge for portrait
-    // 9:16), so 720p means barely any upscale. A smaller frame also keeps
-    // desktop players from blowing the video up to fill the window, which
-    // is what was making it look stretched.
-    const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
-      ? state.photoAspectRatio
-      : (4 / 5);
-    let W, H;
-    if (aspect >= 1) { W = 1280; H = Math.round(1280 / aspect); }
-    else { W = 720; H = Math.round(720 / aspect); }
-    if (H % 2) H++;
-    if (W % 2) W++;
+    // Video canvas is a fixed landscape 1280x720 (the timeline layout is
+    // landscape regardless of the photo's aspect — image left, side panel
+    // right). The photo inside keeps its own aspect ratio.
+    const W = 1280;
+    const H = 720;
 
     const canvas = document.createElement('canvas');
     canvas.width = W;
@@ -1994,36 +2255,70 @@
       setVideoProgress(pct, status);
     };
 
+    // Pre-compute timeline frame inputs once (theme + day list + phase info)
+    const theme = getThemeTokens();
+    const phase = PHASES[state.currentPhase];
+    const phaseDuration = phase ? phase.duration : days.length;
+    const phaseName = phase ? phase.name : '';
+    const allPhaseDays = [];
+    for (let i = 0; i < phaseDuration; i++) allPhaseDays.push(phaseStartJourney + i);
+    const photoSet = new Set(Object.keys(state.photos || {}).map(Number).filter(Boolean));
+    const baseOpts = {
+      W, H, theme, ref, allDays: allPhaseDays, photoSet,
+      phaseStartJourney, phaseName, phaseDuration,
+    };
+
     try {
-      // Phase 1: Sequence with day labels
+      // Phase 1: Sequence — side panel reads "Day N", mode pill "SEQUENCE"
       for (let i = 0; i < days.length; i++) {
         if (videoCancelled) break;
         const d = days[i];
         const img = photos[d];
         if (!img) continue;
-        drawVideoFrame(ctx, img, state.photos[d]?.alignment, ref, W, H, `Day ${phaseDay(d)}`);
+        drawTimelineFrame(ctx, {
+          ...baseOpts,
+          img,
+          alignment: state.photos[d]?.alignment,
+          currentDay: d,
+          headline: `Day ${phaseDay(d)}`,
+          modePill: 'Sequence',
+        });
         const dwell = i === 0 ? SEQ_INTRO_MS : seqPerPhoto;
         await delay(dwell);
         tick(dwell, `Recording sequence (${i + 1}/${days.length})…`);
       }
 
-      // Phase 2: Then
+      // Phase 2: THEN — first photo, headline replaced with "THEN"
       if (!videoCancelled) {
         const firstD = days[0];
         const firstImg = photos[firstD];
         if (firstImg) {
-          drawVideoFrame(ctx, firstImg, state.photos[firstD]?.alignment, ref, W, H, 'THEN');
+          drawTimelineFrame(ctx, {
+            ...baseOpts,
+            img: firstImg,
+            alignment: state.photos[firstD]?.alignment,
+            currentDay: firstD,
+            headline: 'THEN',
+            modePill: 'Then vs Now',
+          });
           await delay(THEN_NOW_MS);
           tick(THEN_NOW_MS, 'Recording THEN…');
         }
       }
 
-      // Phase 3: Now
+      // Phase 3: NOW — last photo, headline replaced with "NOW"
       if (!videoCancelled) {
         const lastD = days[days.length - 1];
         const lastImg = photos[lastD];
         if (lastImg) {
-          drawVideoFrame(ctx, lastImg, state.photos[lastD]?.alignment, ref, W, H, 'NOW');
+          drawTimelineFrame(ctx, {
+            ...baseOpts,
+            img: lastImg,
+            alignment: state.photos[lastD]?.alignment,
+            currentDay: lastD,
+            headline: 'NOW',
+            modePill: 'Then vs Now',
+          });
           await delay(THEN_NOW_MS);
           tick(THEN_NOW_MS, 'Recording NOW…');
         }
