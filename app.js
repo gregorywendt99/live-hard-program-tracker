@@ -1918,15 +1918,17 @@
 
     openVideoSheet();
 
-    // Compute canvas size — 1080p on the short edge for sharp output.
-    // Source photos are compressed to ~1200px on the long edge, so this
-    // closely matches their native pixel data without unnecessary upscale.
+    // Compute canvas size — 720p on the short edge. Source photos are
+    // compressed to ~1200 px long edge (≈675 px short edge for portrait
+    // 9:16), so 720p means barely any upscale. A smaller frame also keeps
+    // desktop players from blowing the video up to fill the window, which
+    // is what was making it look stretched.
     const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
       ? state.photoAspectRatio
       : (4 / 5);
     let W, H;
-    if (aspect >= 1) { W = 1920; H = Math.round(1920 / aspect); }
-    else { W = 1080; H = Math.round(1080 / aspect); }
+    if (aspect >= 1) { W = 1280; H = Math.round(1280 / aspect); }
+    else { W = 720; H = Math.round(720 / aspect); }
     if (H % 2) H++;
     if (W % 2) W++;
 
@@ -1973,7 +1975,7 @@
     try {
       videoRecorder = new MediaRecorder(stream, {
         mimeType: fmt.mime,
-        videoBitsPerSecond: 12_000_000, // 12 Mbps — plenty for 1080p photo sequences
+        videoBitsPerSecond: 7_500_000, // 7.5 Mbps — sharp 720p, modest file size
       });
     } catch (e) {
       showToast('Could not start the recorder.');
