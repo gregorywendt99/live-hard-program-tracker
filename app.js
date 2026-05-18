@@ -1923,7 +1923,7 @@
     const sideGap = 20;
     const sideX = imgX + imgW + sideGap;
     const sideW = innerW - imgW - sideGap;
-    const summaryH = 156;
+    const summaryH = 130;
     drawSummaryBlock(ctx, sideX, stageY, sideW, summaryH, theme, {
       headline, currentDay, phaseStartJourney, phaseName, phaseDuration,
       uploadedCount: photoSet.size, todayDay: allDays[allDays.length - 1] || 0,
@@ -2014,21 +2014,12 @@
     if (data.phaseName) {
       const phaseDayNum = data.currentDay - data.phaseStartJourney + 1;
       ctx.fillStyle = theme.accent;
-      ctx.font = `700 11px ${SYS_FONT}`;
+      ctx.font = `700 12px ${SYS_FONT}`;
       ctx.fillText(`${data.phaseName.toUpperCase()} · DAY ${phaseDayNum} OF ${data.phaseDuration}`, innerX, cy);
-      cy += 20;
     }
-
-    // Divider + stats
-    ctx.fillStyle = theme.separator;
-    ctx.fillRect(innerX, cy + 4, w - padX * 2, 1);
-    cy += 14;
-    ctx.fillStyle = theme.textTertiary;
-    ctx.font = `500 12px ${SYS_FONT}`;
-    const todayDay = data.todayDay;
-    const remaining = Math.max(0, todayDay - data.uploadedCount);
-    const stats = `${data.uploadedCount} of ${todayDay} photo${todayDay === 1 ? '' : 's'} uploaded · ${remaining} to catch up`;
-    ctx.fillText(stats, innerX, cy);
+    // Note: the "X of Y photos uploaded · N to catch up" line is shown
+    // in the live app but omitted from the exported video — it's
+    // ephemeral progress info that doesn't belong in a shareable export.
   }
 
   function drawRailBlock(ctx, x, y, w, h, theme, data) {
@@ -2187,11 +2178,12 @@
 
     openVideoSheet();
 
-    // Video canvas is a fixed landscape 1280x720 (the timeline layout is
-    // landscape regardless of the photo's aspect — image left, side panel
-    // right). The photo inside keeps its own aspect ratio.
-    const W = 1280;
-    const H = 720;
+    // Square canvas: uniform, friendly for social sharing, and the
+    // window won't get blown up by desktop video players the way a
+    // portrait frame would. Photo + side-panel layout is sized
+    // proportionally to fit the square.
+    const W = 1080;
+    const H = 1080;
 
     const canvas = document.createElement('canvas');
     canvas.width = W;
