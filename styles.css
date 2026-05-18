@@ -1632,18 +1632,44 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   font-variant-numeric: tabular-nums;
 }
 
-.photos-rail {
+.photos-rail-frame {
   position: relative;
   flex: 1;
   min-height: 120px;
   background: var(--bg-secondary);
   border-radius: var(--r-md);
+  overflow: hidden;
+  display: flex;
+}
+
+.photos-rail-frame::before,
+.photos-rail-frame::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 6px; /* don't overlap the scrollbar */
+  height: 32px;
+  pointer-events: none;
+  z-index: 2;
+}
+.photos-rail-frame::before {
+  top: 0;
+  background: linear-gradient(to bottom, var(--bg-secondary), transparent);
+}
+.photos-rail-frame::after {
+  bottom: 0;
+  background: linear-gradient(to top, var(--bg-secondary), transparent);
+}
+
+.photos-rail {
+  flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
   scrollbar-color: var(--bg-quaternary) transparent;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain;
+  scroll-behavior: smooth; /* only affects programmatic scrolls */
 }
 .photos-rail::-webkit-scrollbar { width: 4px; }
 .photos-rail::-webkit-scrollbar-track { background: transparent; }
@@ -1655,6 +1681,17 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 .photos-rail-track {
   position: relative;
 }
+
+/* Days without a photo: keep the number/date visible but dim and use a
+   subtle gray dot so they read as "empty slot" rather than "uploaded". */
+.photos-day-item:not(.has-photo) {
+  color: var(--text-tertiary);
+}
+.photos-day-item:not(.has-photo) .photos-day-dot {
+  background: var(--text-tertiary);
+  opacity: 0.3;
+}
+.photos-day-item.future { opacity: 0.45; }
 
 .photos-day-item {
   width: 100%;

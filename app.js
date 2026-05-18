@@ -1477,30 +1477,40 @@
   }
 
   function renderPhotoRail(activeDay) {
-    const todayDay = journeyDayForToday();
-    if (!todayDay) {
+    const phase = PHASES[state.currentPhase];
+    if (!phase || !state.startDate || !state.phaseStartDate) {
       el.photosRailTrack.innerHTML = '';
       updatePhotoSummary(null);
       return;
     }
+    // Show every day of the current phase, even days without photos. The
+    // carousel only plays uploaded days (via uploadedDays()), so empties
+    // are just visible slots — they don't get auto-played but the user
+    // can tap one to upload a photo for that day.
+    const phaseStartJourney = daysBetween(state.startDate, state.phaseStartDate) + 1;
+    const phaseEndJourney = phaseStartJourney + phase.duration - 1;
+    const todayDay = journeyDayForToday() || 0;
     const items = [];
-    for (let d = 1; d <= todayDay; d++) {
+    for (let d = phaseStartJourney; d <= phaseEndJourney; d++) {
+      const phaseDayNum = d - phaseStartJourney + 1;
       const has = !!(state.photos && state.photos[d]);
+      const isFuture = d > todayDay;
       const cls = ['photos-day-item'];
       if (has) cls.push('has-photo');
       if (d === activeDay) cls.push('active');
-      const dateISO = state.startDate ? addDays(state.startDate, d - 1) : null;
-      const dateStr = dateISO ? formatShortDate(dateISO) : '';
+      if (isFuture) cls.push('future');
+      const dateISO = addDays(state.startDate, d - 1);
+      const dateStr = formatShortDate(dateISO);
       items.push(`
         <button class="${cls.join(' ')}" type="button" data-action="select-photo-day" data-day="${d}">
-          <span class="photos-day-num">${d}</span>
+          <span class="photos-day-num">${phaseDayNum}</span>
           <span class="photos-day-date">${dateStr}</span>
           <span class="photos-day-dot" aria-hidden="true"></span>
         </button>
       `);
     }
     el.photosRailTrack.innerHTML = items.join('');
-    scrollRailTo(activeDay);
+    scrollRailTo(activeDay || todayDay);
     updatePhotoSummary(activeDay || todayDay);
   }
 
