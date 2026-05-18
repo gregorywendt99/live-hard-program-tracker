@@ -1905,25 +1905,26 @@
     const stageY = innerY + HEADER_H;
     const stageH = innerH - HEADER_H;
 
-    // 5a. Photo on the left — fits stage height, width derived from aspect
+    // 5a. Photo on the left — fills the full stage height with no gaps.
+    //     Width = height × aspect, capped so very wide photos don't
+    //     overflow the inner area.
     const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
       ? state.photoAspectRatio : (4 / 5);
+    const sideGap = 20;
+    const minSideW = 320;
+    const maxImgW = innerW - sideGap - minSideW;
     let imgH = stageH;
-    let imgW = imgH * aspect;
-    const maxImgWFraction = 0.42;
-    if (imgW > innerW * maxImgWFraction) {
-      imgW = innerW * maxImgWFraction;
-      imgH = imgW / aspect;
-    }
+    let imgW = Math.min(maxImgW, imgH * aspect);
+    imgH = imgW / aspect;
+    if (imgH > stageH) { imgH = stageH; imgW = imgH * aspect; }
     const imgX = innerX;
-    const imgY = stageY + (stageH - imgH) / 2;
+    const imgY = stageY;
     drawPhotoBlock(ctx, imgX, imgY, imgW, imgH, img, alignment, ref, theme);
 
     // 5b. Side panel on the right
-    const sideGap = 20;
     const sideX = imgX + imgW + sideGap;
     const sideW = innerW - imgW - sideGap;
-    const summaryH = 130;
+    const summaryH = 124;
     drawSummaryBlock(ctx, sideX, stageY, sideW, summaryH, theme, {
       headline, currentDay, phaseStartJourney, phaseName, phaseDuration,
       uploadedCount: photoSet.size, todayDay: allDays[allDays.length - 1] || 0,
@@ -2178,12 +2179,32 @@
 
     openVideoSheet();
 
-    // Square canvas: uniform, friendly for social sharing, and the
-    // window won't get blown up by desktop video players the way a
-    // portrait frame would. Photo + side-panel layout is sized
-    // proportionally to fit the square.
-    const W = 1080;
-    const H = 1080;
+    // Canvas size is computed from the layout so the photo fills the
+    // entire stage height (no gaps above/below). Height is fixed at
+    // 1080; width = photo width + side-panel width + paddings. So the
+    // canvas grows or shrinks to fit the photo's aspect cleanly.
+    const TARGET_H = 1080;
+    const CARD_PAD = 24;
+    const INNER_PAD = 28;
+    const HEADER_H = 80;
+    const STAGE_GAP = 20;
+    const SIDE_W = 380;
+    const innerH = TARGET_H - CARD_PAD * 2 - INNER_PAD * 2;
+    const stageH = innerH - HEADER_H;
+    const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
+      ? state.photoAspectRatio : (4 / 5);
+    let photoH = stageH;
+    let photoW = photoH * aspect;
+    // Cap landscape photo width so the canvas doesn't get absurdly wide
+    const MAX_PHOTO_W = 800;
+    if (photoW > MAX_PHOTO_W) {
+      photoW = MAX_PHOTO_W;
+      photoH = photoW / aspect;
+    }
+    let W = Math.round(photoW + STAGE_GAP + SIDE_W + (INNER_PAD + CARD_PAD) * 2);
+    let H = TARGET_H;
+    if (W % 2) W++;
+    if (H % 2) H++;
 
     const canvas = document.createElement('canvas');
     canvas.width = W;
