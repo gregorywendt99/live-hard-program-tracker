@@ -1635,7 +1635,10 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 .photos-rail-frame {
   position: relative;
   flex: 1;
-  min-height: 120px;
+  /* min-height: 0 lets the frame shrink below its 75-item natural height
+     so the grid row stays sized by the image's aspect-ratio. The rail
+     inside scrolls instead of pushing the layout. */
+  min-height: 0;
   background: var(--bg-secondary);
   border-radius: var(--r-md);
   overflow: hidden;
@@ -1663,6 +1666,7 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 
 .photos-rail {
   flex: 1;
+  min-height: 0; /* same reason as the frame — keep overflow internal */
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-width: thin;
