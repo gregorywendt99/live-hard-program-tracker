@@ -1529,7 +1529,7 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   object-fit: cover;
   display: block;
   opacity: 0;
-  transition: opacity 0.45s var(--ease);
+  transition: opacity var(--photo-fade-ms, 240ms) var(--ease);
 }
 .photos-image.shown { opacity: 1; }
 

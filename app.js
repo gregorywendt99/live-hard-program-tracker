@@ -1540,28 +1540,41 @@
     let cancelled = false;
     carouselCancel = () => { cancelled = true; };
     const wait = (ms) => new Promise((r) => { carouselTimer = setTimeout(r, ms); });
+    const setFade = (ms) => el.photosImage.style.setProperty('--photo-fade-ms', `${ms}ms`);
+
+    // Sequence is capped at 4 seconds total, regardless of photo count.
+    // Per-photo dwell drops to a floor of 60 ms so the cycle stays brisk
+    // without melting. Fade duration scales down with dwell so it never
+    // outruns the swap.
+    const SEQ_TOTAL_MS = 4000;
+    const seqPerPhoto = Math.max(60, Math.round(SEQ_TOTAL_MS / days.length));
+    const seqFadeMs = Math.min(180, Math.max(40, Math.round(seqPerPhoto * 0.45)));
+
+    // "Then vs Now" gets a calmer dwell + smoother fade for contrast
+    const compareDwellMs = 2000;
+    const compareFadeMs = 280;
 
     while (!cancelled) {
       // Phase 1: comparison — first vs latest
-      const first = days[0];
-      const last = days[days.length - 1];
+      setFade(compareFadeMs);
       setCarouselMode('Then vs Now');
-      await showPhotoDay(first);
+      await showPhotoDay(days[0]);
       if (cancelled) break;
-      await wait(2500);
+      await wait(compareDwellMs);
       if (cancelled) break;
-      await showPhotoDay(last);
+      await showPhotoDay(days[days.length - 1]);
       if (cancelled) break;
-      await wait(2500);
+      await wait(compareDwellMs);
       if (cancelled) break;
 
-      // Phase 2: full sequence
+      // Phase 2: full sequence (under 4s end-to-end)
+      setFade(seqFadeMs);
       setCarouselMode('Sequence');
       for (const d of days) {
         if (cancelled) break;
         await showPhotoDay(d);
         if (cancelled) break;
-        await wait(1100);
+        await wait(seqPerPhoto);
       }
     }
   }
@@ -2076,6 +2089,7 @@
         if (!d) break;
         if (state.photos && state.photos[d]) {
           clearCarousel();
+          el.photosImage.style.removeProperty('--photo-fade-ms');
           setCarouselMode('Paused');
           showPhotoDay(d);
         } else {
