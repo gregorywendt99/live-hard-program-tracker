@@ -2355,20 +2355,25 @@
     }
   });
 
-  // Cap the .photos-side height to the actual rendered height of the image
-  // wrap. The CSS-only approaches kept leaking the rail's 75-item content
-  // height up through the grid, stretching the image. ResizeObserver is the
-  // most reliable fix — we just measure and set max-height.
-  function syncPhotoSideHeight() {
-    if (!el.photosImageWrap || !el.photosSide) return;
-    const h = el.photosImageWrap.clientHeight;
-    if (h > 0) el.photosSide.style.maxHeight = `${h}px`;
+  // The rail-frame is absolutely positioned to fill .photos-side. On desktop
+  // the summary widget sits at the top in normal flow, so we have to push
+  // the rail-frame down by the summary's height + gap so it doesn't overlap.
+  // On mobile the summary is display: none, so top stays at 0.
+  function syncRailFrameTop() {
+    const railFrame = document.querySelector('.photos-rail-frame');
+    if (!railFrame || !el.photosSummary) return;
+    const cs = window.getComputedStyle(el.photosSummary);
+    if (cs.display === 'none') {
+      railFrame.style.top = '0px';
+    } else {
+      railFrame.style.top = `${el.photosSummary.offsetHeight + 12}px`;
+    }
   }
-  if (typeof ResizeObserver !== 'undefined' && el.photosImageWrap) {
-    new ResizeObserver(syncPhotoSideHeight).observe(el.photosImageWrap);
+  if (typeof ResizeObserver !== 'undefined' && el.photosSummary) {
+    new ResizeObserver(syncRailFrameTop).observe(el.photosSummary);
   }
-  window.addEventListener('resize', syncPhotoSideHeight);
-  requestAnimationFrame(syncPhotoSideHeight);
+  window.addEventListener('resize', syncRailFrameTop);
+  requestAnimationFrame(syncRailFrameTop);
 
   // Re-render at midnight
   function scheduleMidnightRefresh() {

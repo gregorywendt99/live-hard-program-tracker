@@ -1577,16 +1577,12 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 .photos-image-wrap.has-photo .photos-day-tag { opacity: 1; }
 
 .photos-side {
-  /* Grid with an auto summary row and a 1fr rail row. This is the only
-     reliable way to keep the rail row from inheriting its 75-item content
-     height — flex columns leak the child intrinsic size up to the parent
-     grid, which was stretching the image to ~3000 px tall. With
-     grid-template-rows: auto 1fr the rail row's min size is 0 (1fr
-     accepts shrinking), so the parent grid row is sized by the image's
-     aspect-ratio alone. */
-  display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 12px;
+  /* The rail-frame inside is position: absolute so its tall (75-item)
+     content can't propagate up and force the parent grid row taller. With
+     the rail out of normal flow, .photos-side's intrinsic height is just
+     the summary (mobile: 0). The grid row is then sized only by the
+     image's aspect-ratio, and the rail fills the remaining space. */
+  position: relative;
   min-width: 0;
   min-height: 0;
 }
@@ -1640,9 +1636,15 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 
 .photos-rail-frame {
-  position: relative;
-  /* Now sits in the 1fr row of .photos-side's grid — fills that row's
-     height and clips overflow. */
+  /* Absolute fill of .photos-side. top is overwritten by JS to sit below
+     the summary on desktop; defaults to 0 on mobile (where summary is
+     display: none). bottom: 0 makes it stretch to fill the side's height,
+     which is in turn locked to the image's aspect-ratio height. */
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   min-height: 0;
   background: var(--bg-secondary);
   border-radius: var(--r-md);
