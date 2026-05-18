@@ -1614,15 +1614,23 @@
     const wait = (ms) => new Promise((r) => { carouselTimer = setTimeout(r, ms); });
     const setFade = (ms) => el.photosImageWrap.style.setProperty('--photo-fade-ms', `${ms}ms`);
 
-    // Sequence is capped at 4 seconds total, regardless of photo count.
-    // Per-photo dwell drops to a floor of 60 ms so the cycle stays brisk
-    // without melting. Below 200 ms we hard-swap (no fade) — the fade would
-    // be imperceptible at that speed and skipping it removes the per-frame
-    // transition work, which keeps the swap in lockstep with the rail.
-    const SEQ_TOTAL_MS = 4000;
-    const seqPerPhoto = Math.max(60, Math.round(SEQ_TOTAL_MS / days.length));
+    // Sequence pacing:
+    //  - Each photo is shown for at most 500 ms (so a 7-day journey isn't
+    //    needlessly stretched out).
+    //  - The whole sequence is capped at 10 s total (so a finished 75-day
+    //    journey doesn't take forever to watch).
+    //  - Floor of 60 ms keeps the cycle in lockstep with the rail even at
+    //    extreme photo counts (>166).
+    //  - Below 200 ms per-photo we hard-swap with no fade so the swap stays
+    //    crisp; otherwise fade duration scales with dwell.
+    const SEQ_PER_PHOTO_MAX = 500;
+    const SEQ_TOTAL_MS = 10000;
+    const seqPerPhoto = Math.min(
+      SEQ_PER_PHOTO_MAX,
+      Math.max(60, Math.round(SEQ_TOTAL_MS / days.length))
+    );
     const useHardSwap = seqPerPhoto < 200;
-    const seqFadeMs = useHardSwap ? 0 : Math.min(180, Math.max(60, Math.round(seqPerPhoto * 0.4)));
+    const seqFadeMs = useHardSwap ? 0 : Math.min(220, Math.max(80, Math.round(seqPerPhoto * 0.4)));
 
     // "Then vs Now" gets a calmer dwell + smoother fade for contrast
     const compareDwellMs = 2000;
