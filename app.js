@@ -1639,16 +1639,15 @@
     //    journey doesn't take forever to watch).
     //  - Floor of 60 ms keeps the cycle in lockstep with the rail even at
     //    extreme photo counts (>166).
-    //  - Below 200 ms per-photo we hard-swap with no fade so the swap stays
-    //    crisp; otherwise fade duration scales with dwell.
+    //  - Fade duration scales with dwell — long enough to feel smooth at
+    //    500 ms per photo, short enough to not blur the swap at 60 ms.
     const SEQ_PER_PHOTO_MAX = 500;
     const SEQ_TOTAL_MS = 10000;
     const seqPerPhoto = Math.min(
       SEQ_PER_PHOTO_MAX,
       Math.max(60, Math.round(SEQ_TOTAL_MS / days.length))
     );
-    const useHardSwap = seqPerPhoto < 200;
-    const seqFadeMs = useHardSwap ? 0 : Math.min(220, Math.max(80, Math.round(seqPerPhoto * 0.4)));
+    const seqFadeMs = Math.min(220, Math.max(40, Math.round(seqPerPhoto * 0.4)));
 
     // "Then vs Now" gets a calmer dwell + smoother fade for contrast
     const compareDwellMs = 2000;
@@ -1667,10 +1666,10 @@
       await wait(compareDwellMs);
       if (cancelled) break;
 
-      // Phase 2: full sequence (under 4s end-to-end)
-      if (!useHardSwap) setFade(seqFadeMs);
+      // Phase 2: full sequence (under 10s end-to-end), always cross-fading
+      setFade(seqFadeMs);
       setCarouselMode('Sequence');
-      const seqOpts = { lightRail: true, instant: useHardSwap };
+      const seqOpts = { lightRail: true };
       for (const d of days) {
         if (cancelled) break;
         await showPhotoDay(d, seqOpts);
