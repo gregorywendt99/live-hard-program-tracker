@@ -1849,10 +1849,11 @@
     const textW = ctx.measureText(text).width;
     const pillW = textW + padX * 2;
     const pillH = fontSize + padY * 2;
-    const x = Math.round(H * 0.025);
-    const y = H - x - pillH;
+    const margin = Math.round(H * 0.025);
+    // Top-right corner
+    const x = W - margin - pillW;
+    const y = margin;
     const r = pillH / 2;
-    // Pill background
     ctx.fillStyle = 'rgba(0, 0, 0, 0.62)';
     ctx.beginPath();
     ctx.moveTo(x + r, y);
@@ -1862,7 +1863,6 @@
     ctx.arcTo(x, y, x + r, y, r);
     ctx.closePath();
     ctx.fill();
-    // White text
     ctx.fillStyle = '#ffffff';
     ctx.fillText(text, x + padX, y + pillH / 2);
     ctx.restore();
@@ -1918,13 +1918,15 @@
 
     openVideoSheet();
 
-    // Compute canvas size — target 720p on the short edge
+    // Compute canvas size — 1080p on the short edge for sharp output.
+    // Source photos are compressed to ~1200px on the long edge, so this
+    // closely matches their native pixel data without unnecessary upscale.
     const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
       ? state.photoAspectRatio
       : (4 / 5);
     let W, H;
-    if (aspect >= 1) { W = 1280; H = Math.round(1280 / aspect); }
-    else { W = 720; H = Math.round(720 / aspect); }
+    if (aspect >= 1) { W = 1920; H = Math.round(1920 / aspect); }
+    else { W = 1080; H = Math.round(1080 / aspect); }
     if (H % 2) H++;
     if (W % 2) W++;
 
@@ -1932,6 +1934,8 @@
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
     // Fill black so the first captured frame isn't transparent
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
@@ -1969,7 +1973,7 @@
     try {
       videoRecorder = new MediaRecorder(stream, {
         mimeType: fmt.mime,
-        videoBitsPerSecond: 4_500_000,
+        videoBitsPerSecond: 12_000_000, // 12 Mbps — plenty for 1080p photo sequences
       });
     } catch (e) {
       showToast('Could not start the recorder.');
