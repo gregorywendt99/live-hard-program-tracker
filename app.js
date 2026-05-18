@@ -1345,18 +1345,32 @@
       // If the press lands near an existing pin, grab it.
       const grabbedPinIdx = findPinNearCanvasPoint(cx, cy);
 
+      // For pin grabs, capture the offset between the click and the pin's
+      // actual position so the pin doesn't jump to wherever you tapped
+      // inside the circle — it stays put and only moves by the drag delta.
+      let pinOffsetX = 0;
+      let pinOffsetY = 0;
+      if (grabbedPinIdx >= 0) {
+        const W = canvas.clientWidth;
+        const H = canvas.clientHeight;
+        const pinCanvas = transformPoint(alignState.pins[grabbedPinIdx], alignState.transform, W, H);
+        pinOffsetX = cx - pinCanvas.x;
+        pinOffsetY = cy - pinCanvas.y;
+      }
+
       drag = {
         type: grabbedPinIdx >= 0 ? 'moving-pin' : 'pending',
         pinIdx: grabbedPinIdx,
         startX: e.clientX, startY: e.clientY,
         cx, cy,
+        pinOffsetX, pinOffsetY,
         origTransform: { ...alignState.transform },
         holdTimer: null,
       };
 
       if (drag.type === 'moving-pin') {
-        // Show the magnifier immediately when grabbing a pin
-        showMagnifier(cx, cy);
+        // Magnifier centers on the pin's saved position, not the click
+        showMagnifier(cx - pinOffsetX, cy - pinOffsetY);
       } else if (!canPanFreely()) {
         drag.holdTimer = setTimeout(() => {
           if (!drag || drag.type === 'pan' || drag.type === 'moving-pin') return;
@@ -1389,7 +1403,11 @@
         alignState.transform.tx = drag.origTransform.tx + dx;
         alignState.transform.ty = drag.origTransform.ty + dy;
         renderAlignView();
-      } else if (drag.type === 'placing' || drag.type === 'moving-pin') {
+      } else if (drag.type === 'moving-pin') {
+        // Subtract the original offset so the magnifier (and eventual
+        // drop point) tracks the pin's center, not the finger center.
+        updateMagnifier(cx - drag.pinOffsetX, cy - drag.pinOffsetY);
+      } else if (drag.type === 'placing') {
         updateMagnifier(cx, cy);
       }
     });
@@ -1400,7 +1418,7 @@
       if (drag.holdTimer) clearTimeout(drag.holdTimer);
       hideMagnifier();
       if (drag.type === 'moving-pin') {
-        setPinAt(drag.pinIdx, drag.cx, drag.cy);
+        setPinAt(drag.pinIdx, drag.cx - drag.pinOffsetX, drag.cy - drag.pinOffsetY);
       } else if (drag.type === 'pending' || drag.type === 'placing') {
         placeOrMovePin(drag.cx, drag.cy);
       }
