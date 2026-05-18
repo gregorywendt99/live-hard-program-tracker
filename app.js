@@ -336,6 +336,7 @@
     photosDayTag: $('#photosDayTag'),
     photosRailTrack: $('#photosRailTrack'),
     photosModePill: $('#photosModePill'),
+    photosSide: $('.photos-side'),
     photosSummary: $('#photosSummary'),
     photosSummaryDay: $('#photosSummaryDay'),
     photosSummaryDate: $('#photosSummaryDate'),
@@ -2353,6 +2354,21 @@
       else if (el.settingsSheet.getAttribute('aria-hidden') === 'false') closeSettings();
     }
   });
+
+  // Cap the .photos-side height to the actual rendered height of the image
+  // wrap. The CSS-only approaches kept leaking the rail's 75-item content
+  // height up through the grid, stretching the image. ResizeObserver is the
+  // most reliable fix — we just measure and set max-height.
+  function syncPhotoSideHeight() {
+    if (!el.photosImageWrap || !el.photosSide) return;
+    const h = el.photosImageWrap.clientHeight;
+    if (h > 0) el.photosSide.style.maxHeight = `${h}px`;
+  }
+  if (typeof ResizeObserver !== 'undefined' && el.photosImageWrap) {
+    new ResizeObserver(syncPhotoSideHeight).observe(el.photosImageWrap);
+  }
+  window.addEventListener('resize', syncPhotoSideHeight);
+  requestAnimationFrame(syncPhotoSideHeight);
 
   // Re-render at midnight
   function scheduleMidnightRefresh() {
