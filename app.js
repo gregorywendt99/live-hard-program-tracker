@@ -1599,8 +1599,8 @@
     const count = uploadedDays().length;
     el.photosDownloadBtn.disabled = count < 2;
     el.photosDownloadBtn.title = count < 2
-      ? 'Upload at least 2 photos to download a video'
-      : 'Download as video';
+      ? 'Upload at least 2 photos to download a GIF'
+      : 'Download as GIF';
   }
 
   function updatePhotoSummary(day) {
@@ -2229,48 +2229,41 @@
 
   function cancelVideoExport() {
     videoCancelled = true;
-    if (videoRecorder && videoRecorder.state !== 'inactive') {
-      try { videoRecorder.stop(); } catch {}
-    }
     closeVideoSheet();
   }
 
   async function downloadProgressVideo() {
-    const fmt = pickVideoMime();
-    if (!fmt) {
-      showToast('Video export isn\'t supported in this browser.');
+    if (typeof GIF === 'undefined') {
+      showToast('GIF encoder failed to load — check your connection.');
       return;
     }
     const days = uploadedDays();
     if (days.length < 2) {
-      showToast('You need at least 2 photos to make a video.');
+      showToast('You need at least 2 photos to make a GIF.');
       return;
     }
 
+    videoCancelled = false;
     openVideoSheet();
+    setVideoProgress(0, 'Preparing photos…');
 
-    // Canvas size is computed from the layout so the photo fills the
-    // entire stage height (no gaps above/below). Height is fixed at
-    // 1080; width = photo width + side-panel width + paddings. So the
-    // canvas grows or shrinks to fit the photo's aspect cleanly.
-    const TARGET_H = 1080;
-    const CARD_PAD = 24;
-    const INNER_PAD = 28;
-    const HEADER_H = 80;
-    const STAGE_GAP = 20;
-    const SIDE_W = 380;
+    // Canvas size: photo fills full stage height, width auto-fits. GIFs are
+    // heavy, so the frame is smaller than the old video (600 px tall) to
+    // keep the file reasonable while staying readable.
+    const TARGET_H = 600;
+    const CARD_PAD = 16;
+    const INNER_PAD = 20;
+    const HEADER_H = 58;
+    const STAGE_GAP = 14;
+    const SIDE_W = 270;
     const innerH = TARGET_H - CARD_PAD * 2 - INNER_PAD * 2;
     const stageH = innerH - HEADER_H;
     const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
       ? state.photoAspectRatio : (4 / 5);
     let photoH = stageH;
     let photoW = photoH * aspect;
-    // Cap landscape photo width so the canvas doesn't get absurdly wide
-    const MAX_PHOTO_W = 800;
-    if (photoW > MAX_PHOTO_W) {
-      photoW = MAX_PHOTO_W;
-      photoH = photoW / aspect;
-    }
+    const MAX_PHOTO_W = 460;
+    if (photoW > MAX_PHOTO_W) { photoW = MAX_PHOTO_W; photoH = photoW / aspect; }
     let W = Math.round(photoW + STAGE_GAP + SIDE_W + (INNER_PAD + CARD_PAD) * 2);
     let H = TARGET_H;
     if (W % 2) W++;
@@ -2282,7 +2275,6 @@
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    // Fill black so the first captured frame isn't transparent
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
 
@@ -2295,50 +2287,33 @@
         const url = await fetchPhotoURL(d);
         if (url) photos[d] = await loadImage(url);
       } catch { /* ignore */ }
-      setVideoProgress(Math.round((i + 1) / days.length * 25), `Loading photos (${i + 1}/${days.length})…`);
+      setVideoProgress(Math.round((i + 1) / days.length * 15), `Loading photos (${i + 1}/${days.length})…`);
     }
     if (videoCancelled) return;
 
-    // Phase day number helper (same numbering as the rail)
+    // Load the gif.js worker as a same-origin blob (avoids CORS on the
+    // cross-origin worker script).
+    let workerUrl;
+    try {
+      const resp = await fetch('https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js');
+      workerUrl = URL.createObjectURL(await resp.blob());
+    } catch {
+      showToast('Could not load the GIF encoder.');
+      closeVideoSheet();
+      return;
+    }
+    if (videoCancelled) { URL.revokeObjectURL(workerUrl); return; }
+
     const phaseStartJourney = state.phaseStartDate
       ? daysBetween(state.startDate, state.phaseStartDate) + 1
       : 1;
     const phaseDay = (d) => d - phaseStartJourney + 1;
     const ref = defaultRef();
 
-    // Pacing
-    const SEQ_TOTAL_MS = 8000;
-    const seqPerPhoto = Math.max(120, Math.min(450, Math.round(SEQ_TOTAL_MS / days.length)));
-    const SEQ_INTRO_MS = 1000;
-    const THEN_NOW_MS = 2000;
-    const totalEstMs = SEQ_INTRO_MS + (days.length - 1) * seqPerPhoto + THEN_NOW_MS * 2;
+    // Pacing — total forward pass ~6 s, capped per-frame
+    const seqPerPhoto = Math.max(120, Math.min(450, Math.round(6000 / days.length)));
+    const SEQ_INTRO_MS = 900;
 
-    // Set up the recorder
-    const stream = canvas.captureStream(30);
-    let chunks = [];
-    try {
-      videoRecorder = new MediaRecorder(stream, {
-        mimeType: fmt.mime,
-        videoBitsPerSecond: 7_500_000, // 7.5 Mbps — sharp 720p, modest file size
-      });
-    } catch (e) {
-      showToast('Could not start the recorder.');
-      closeVideoSheet();
-      return;
-    }
-    videoRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-    const finished = new Promise((resolve) => { videoRecorder.onstop = resolve; });
-    videoRecorder.start(250); // emit a chunk every 250ms
-
-    const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-    const elapsed = { ms: 0 };
-    const tick = (ms, status) => {
-      elapsed.ms += ms;
-      const pct = 25 + Math.min(70, (elapsed.ms / totalEstMs) * 70);
-      setVideoProgress(pct, status);
-    };
-
-    // Pre-compute timeline frame inputs once (theme + day list + phase info)
     const theme = getThemeTokens();
     const phase = PHASES[state.currentPhase];
     const phaseDuration = phase ? phase.duration : days.length;
@@ -2351,100 +2326,69 @@
       phaseStartJourney, phaseName, phaseDuration,
     };
 
-    // Pre-compute the exposure filter per day (uses cached luminances).
     const exposureFilters = {};
     if (state.matchExposure) {
       for (const d of days) {
-        if (videoCancelled) return;
+        if (videoCancelled) { URL.revokeObjectURL(workerUrl); return; }
         exposureFilters[d] = await exposureFilterFor(d);
       }
     }
 
-    try {
-      // Phase 1: Sequence — side panel reads "Day N", mode pill "SEQUENCE"
-      for (let i = 0; i < days.length; i++) {
-        if (videoCancelled) break;
-        const d = days[i];
-        const img = photos[d];
-        if (!img) continue;
-        drawTimelineFrame(ctx, {
-          ...baseOpts,
-          img,
-          alignment: state.photos[d]?.alignment,
-          currentDay: d,
-          headline: `Day ${phaseDay(d)}`,
-          modePill: 'Sequence',
-          exposureFilter: exposureFilters[d] || '',
-        });
-        const dwell = i === 0 ? SEQ_INTRO_MS : seqPerPhoto;
-        await delay(dwell);
-        tick(dwell, `Recording sequence (${i + 1}/${days.length})…`);
-      }
+    const gif = new GIF({
+      workers: 2,
+      quality: 10,
+      width: W,
+      height: H,
+      workerScript: workerUrl,
+      repeat: 0, // loop forever
+      background: theme.bg && theme.bg.startsWith('#') ? theme.bg : '#000',
+    });
 
-      // Phase 2: THEN — first photo, headline replaced with "THEN"
-      if (!videoCancelled) {
-        const firstD = days[0];
-        const firstImg = photos[firstD];
-        if (firstImg) {
-          drawTimelineFrame(ctx, {
-            ...baseOpts,
-            img: firstImg,
-            alignment: state.photos[firstD]?.alignment,
-            currentDay: firstD,
-            headline: 'THEN',
-            modePill: 'Then vs Now',
-            exposureFilter: exposureFilters[firstD] || '',
-          });
-          await delay(THEN_NOW_MS);
-          tick(THEN_NOW_MS, 'Recording THEN…');
-        }
-      }
+    // Ping-pong order: forward through every day, then back (excluding the
+    // two endpoints so they don't double on the turnaround). The GIF loops
+    // this forever, so it reads as a smooth back-and-forth.
+    const order = [...days, ...days.slice(1, -1).reverse()];
 
-      // Phase 3: NOW — last photo, headline replaced with "NOW"
-      if (!videoCancelled) {
-        const lastD = days[days.length - 1];
-        const lastImg = photos[lastD];
-        if (lastImg) {
-          drawTimelineFrame(ctx, {
-            ...baseOpts,
-            img: lastImg,
-            alignment: state.photos[lastD]?.alignment,
-            currentDay: lastD,
-            headline: 'NOW',
-            modePill: 'Then vs Now',
-            exposureFilter: exposureFilters[lastD] || '',
-          });
-          await delay(THEN_NOW_MS);
-          tick(THEN_NOW_MS, 'Recording NOW…');
-        }
-      }
-    } finally {
-      try { if (videoRecorder.state !== 'inactive') videoRecorder.stop(); } catch {}
-      await finished;
-      videoRecorder = null;
+    const yield0 = () => new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < order.length; i++) {
+      if (videoCancelled) { try { gif.abort(); } catch {} URL.revokeObjectURL(workerUrl); closeVideoSheet(); return; }
+      const d = order[i];
+      const img = photos[d];
+      if (!img) continue;
+      drawTimelineFrame(ctx, {
+        ...baseOpts,
+        img,
+        alignment: state.photos[d]?.alignment,
+        currentDay: d,
+        headline: `Day ${phaseDay(d)}`,
+        modePill: 'Sequence',
+        exposureFilter: exposureFilters[d] || '',
+      });
+      const delayMs = (i === 0) ? SEQ_INTRO_MS : seqPerPhoto;
+      gif.addFrame(ctx, { delay: delayMs, copy: true });
+      setVideoProgress(15 + Math.round((i + 1) / order.length * 45), `Building frames (${i + 1}/${order.length})…`);
+      if (i % 4 === 0) await yield0(); // keep the UI responsive
     }
 
-    if (videoCancelled) {
-      closeVideoSheet();
-      return;
-    }
-
-    setVideoProgress(98, 'Finalizing…');
-    const blob = new Blob(chunks, { type: fmt.mime });
-    chunks = null;
-
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `live-hard-progress-${todayISO()}.${fmt.ext}`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
-
-    setVideoProgress(100, 'Done!');
-    setTimeout(() => closeVideoSheet(), 600);
-    showToast('Video saved.');
+    gif.on('progress', (p) => {
+      setVideoProgress(60 + Math.round(p * 38), 'Encoding GIF…');
+    });
+    gif.on('finished', (blob) => {
+      URL.revokeObjectURL(workerUrl);
+      if (videoCancelled) { closeVideoSheet(); return; }
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `live-hard-progress-${todayISO()}.gif`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      setVideoProgress(100, 'Done!');
+      setTimeout(() => closeVideoSheet(), 600);
+      showToast('GIF saved.');
+    });
+    gif.render();
   }
 
   function restartPhotoCarousel() {
