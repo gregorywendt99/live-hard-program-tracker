@@ -2247,28 +2247,30 @@
     openVideoSheet();
     setVideoProgress(0, 'Preparing photos…');
 
-    // Canvas size: photo fills full stage height, width auto-fits. GIFs are
-    // heavy, so the frame is smaller than the old video (600 px tall) to
-    // keep the file reasonable while staying readable.
-    const TARGET_H = 600;
-    const CARD_PAD = 16;
-    const INNER_PAD = 20;
-    const HEADER_H = 58;
-    const STAGE_GAP = 14;
-    const SIDE_W = 270;
+    // Render each frame at full resolution (1080 tall) where the layout
+    // proportions/fonts are tuned, then DOWNSCALE to the GIF size. This
+    // keeps the card looking exactly like the app instead of having
+    // oversized padding/fonts from drawing straight at a small size.
+    const TARGET_H = 1080;
+    const CARD_PAD = 24;
+    const INNER_PAD = 28;
+    const HEADER_H = 80;
+    const STAGE_GAP = 20;
+    const SIDE_W = 380;
     const innerH = TARGET_H - CARD_PAD * 2 - INNER_PAD * 2;
     const stageH = innerH - HEADER_H;
     const aspect = (state.photoAspectRatio && state.photoAspectRatio > 0)
       ? state.photoAspectRatio : (4 / 5);
     let photoH = stageH;
     let photoW = photoH * aspect;
-    const MAX_PHOTO_W = 460;
+    const MAX_PHOTO_W = 800;
     if (photoW > MAX_PHOTO_W) { photoW = MAX_PHOTO_W; photoH = photoW / aspect; }
     let W = Math.round(photoW + STAGE_GAP + SIDE_W + (INNER_PAD + CARD_PAD) * 2);
     let H = TARGET_H;
     if (W % 2) W++;
     if (H % 2) H++;
 
+    // Full-res render canvas
     const canvas = document.createElement('canvas');
     canvas.width = W;
     canvas.height = H;
@@ -2277,6 +2279,19 @@
     ctx.imageSmoothingQuality = 'high';
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, W, H);
+
+    // Downscaled GIF output canvas (~0.5x → still readable, much smaller)
+    const GIF_SCALE = 0.5;
+    let gifW = Math.round(W * GIF_SCALE);
+    let gifH = Math.round(H * GIF_SCALE);
+    if (gifW % 2) gifW++;
+    if (gifH % 2) gifH++;
+    const gifCanvas = document.createElement('canvas');
+    gifCanvas.width = gifW;
+    gifCanvas.height = gifH;
+    const gifCtx = gifCanvas.getContext('2d');
+    gifCtx.imageSmoothingEnabled = true;
+    gifCtx.imageSmoothingQuality = 'high';
 
     // Pre-load every uploaded photo (with progress)
     const photos = {};
@@ -2313,6 +2328,7 @@
     // Pacing — total forward pass ~6 s, capped per-frame
     const seqPerPhoto = Math.max(120, Math.min(450, Math.round(6000 / days.length)));
     const SEQ_INTRO_MS = 900;
+    const THEN_NOW_MS = 2000;
 
     const theme = getThemeTokens();
     const phase = PHASES[state.currentPhase];
@@ -2337,37 +2353,45 @@
     const gif = new GIF({
       workers: 2,
       quality: 10,
-      width: W,
-      height: H,
+      width: gifW,
+      height: gifH,
       workerScript: workerUrl,
       repeat: 0, // loop forever
       background: theme.bg && theme.bg.startsWith('#') ? theme.bg : '#000',
     });
 
-    // Ping-pong order: forward through every day, then back (excluding the
-    // two endpoints so they don't double on the turnaround). The GIF loops
-    // this forever, so it reads as a smooth back-and-forth.
-    const order = [...days, ...days.slice(1, -1).reverse()];
+    // Forward loop: every day in order, then THEN (first photo) and NOW
+    // (last photo). The GIF loops, so it plays through once and restarts.
+    const frames = days.map((d, i) => ({
+      day: d,
+      headline: `Day ${phaseDay(d)}`,
+      pill: 'Sequence',
+      delay: i === 0 ? SEQ_INTRO_MS : seqPerPhoto,
+    }));
+    frames.push({ day: days[0], headline: 'THEN', pill: 'Then vs Now', delay: THEN_NOW_MS });
+    frames.push({ day: days[days.length - 1], headline: 'NOW', pill: 'Then vs Now', delay: THEN_NOW_MS });
 
     const yield0 = () => new Promise((r) => setTimeout(r, 0));
-    for (let i = 0; i < order.length; i++) {
+    for (let i = 0; i < frames.length; i++) {
       if (videoCancelled) { try { gif.abort(); } catch {} URL.revokeObjectURL(workerUrl); closeVideoSheet(); return; }
-      const d = order[i];
-      const img = photos[d];
+      const f = frames[i];
+      const img = photos[f.day];
       if (!img) continue;
       drawTimelineFrame(ctx, {
         ...baseOpts,
         img,
-        alignment: state.photos[d]?.alignment,
-        currentDay: d,
-        headline: `Day ${phaseDay(d)}`,
-        modePill: 'Sequence',
-        exposureFilter: exposureFilters[d] || '',
+        alignment: state.photos[f.day]?.alignment,
+        currentDay: f.day,
+        headline: f.headline,
+        modePill: f.pill,
+        exposureFilter: exposureFilters[f.day] || '',
       });
-      const delayMs = (i === 0) ? SEQ_INTRO_MS : seqPerPhoto;
-      gif.addFrame(ctx, { delay: delayMs, copy: true });
-      setVideoProgress(15 + Math.round((i + 1) / order.length * 45), `Building frames (${i + 1}/${order.length})…`);
-      if (i % 4 === 0) await yield0(); // keep the UI responsive
+      // Downscale full-res frame onto the GIF canvas
+      gifCtx.clearRect(0, 0, gifW, gifH);
+      gifCtx.drawImage(canvas, 0, 0, gifW, gifH);
+      gif.addFrame(gifCtx, { delay: f.delay, copy: true });
+      setVideoProgress(15 + Math.round((i + 1) / frames.length * 45), `Building frames (${i + 1}/${frames.length})…`);
+      if (i % 3 === 0) await yield0(); // keep the UI responsive
     }
 
     gif.on('progress', (p) => {
