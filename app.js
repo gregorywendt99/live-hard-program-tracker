@@ -108,6 +108,8 @@
     photos: {}, // { [journeyDay: number 1-indexed]: { uploadedAt: string, alignment?: { p1, p2 } } }
     photoAlignmentRef: { r1: { x: 0.5, y: 0.22 }, r2: { x: 0.5, y: 0.5 }, r3: { x: 0.5, y: 0.78 } },
     photoAspectRatio: null, // width / height of the first uploaded photo
+    matchExposure: false, // normalize each photo's brightness to the reference
+    alignmentReferenceDay: null, // journey day whose photo set the alignment reference
   });
 
   let state = defaultState();
@@ -271,6 +273,7 @@
     confirmOk: $('#confirmOk'),
     toast: $('#toast'),
     startDateInput: $('#startDateInput'),
+    matchExposureToggle: $('#matchExposureToggle'),
     waitProgressFill: $('#waitProgressFill'),
     waitDaysDone: $('#waitDaysDone'),
     waitDaysLeft: $('#waitDaysLeft'),
@@ -792,6 +795,66 @@
     });
   }
 
+  /* ----- Exposure matching ------------------------------------------- */
+
+  // Cache mean luminance per journey day so we don't re-decode each time.
+  const luminanceCache = new Map();
+
+  function meanLuminanceOf(img) {
+    try {
+      const S = 48;
+      const c = document.createElement('canvas');
+      c.width = S; c.height = S;
+      const cctx = c.getContext('2d', { willReadFrequently: true });
+      cctx.drawImage(img, 0, 0, S, S);
+      const data = cctx.getImageData(0, 0, S, S).data;
+      let sum = 0;
+      const n = data.length / 4;
+      for (let i = 0; i < data.length; i += 4) {
+        sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      }
+      return n ? sum / n : 128;
+    } catch {
+      return 128;
+    }
+  }
+
+  async function getDayLuminance(day) {
+    if (luminanceCache.has(day)) return luminanceCache.get(day);
+    try {
+      const url = await fetchPhotoURL(day);
+      if (!url) return 128;
+      const img = await loadImage(url);
+      const lum = meanLuminanceOf(img);
+      luminanceCache.set(day, lum);
+      return lum;
+    } catch {
+      return 128;
+    }
+  }
+
+  function exposureReferenceDay() {
+    if (state.alignmentReferenceDay && state.photos?.[state.alignmentReferenceDay]) {
+      return state.alignmentReferenceDay;
+    }
+    const days = uploadedDays();
+    return days.length ? days[0] : null;
+  }
+
+  // Returns a CSS/canvas filter string ('' = none) that brightens or dims
+  // `day`'s photo so its average luminance matches the reference photo.
+  async function exposureFilterFor(day) {
+    if (!state.matchExposure) return '';
+    const refDay = exposureReferenceDay();
+    if (!refDay || day === refDay) return '';
+    const [refLum, dayLum] = await Promise.all([getDayLuminance(refDay), getDayLuminance(day)]);
+    if (dayLum <= 1) return '';
+    let mult = refLum / dayLum;
+    mult = Math.max(0.5, Math.min(2.0, mult)); // clamp extreme corrections
+    if (Math.abs(mult - 1) < 0.01) return '';
+    return `brightness(${mult.toFixed(3)})`;
+  }
+
   async function uploadPhotoForDay(dayNum, file) {
     if (!firestore || !currentUser) {
       showToast('Sign in first to save photos.');
@@ -817,6 +880,7 @@
       el.photoProgressFill.style.width = '100%';
       el.photoProgressLabel.textContent = 'Done';
       photoDataCache.set(dayNum, dataUrl);
+      luminanceCache.delete(dayNum);
 
       if (!state.photos) state.photos = {};
       state.photos[dayNum] = { uploadedAt: new Date().toISOString() };
@@ -863,6 +927,7 @@
           if (ref) await ref.delete();
         } catch (e) { console.warn('Delete failed (may not exist)', e); }
         photoDataCache.delete(dayNum);
+        luminanceCache.delete(dayNum);
         if (state.photos) delete state.photos[dayNum];
         saveState();
         renderPhotoSheet();
@@ -1242,6 +1307,7 @@
       if (pins[1]) { const p = transformPoint(pins[1], transform, W, H); newRef.r2 = { x: p.x / W, y: p.y / H }; }
       if (pins[2]) { const p = transformPoint(pins[2], transform, W, H); newRef.r3 = { x: p.x / W, y: p.y / H }; }
       state.photoAlignmentRef = newRef;
+      state.alignmentReferenceDay = day; // also the exposure baseline
       showToast('Reference updated. All photos will re-align.');
     } else {
       showToast('Alignment saved.');
@@ -1472,6 +1538,7 @@
       layer.style.transition = 'none';
       layer.style.opacity = '0';
       layer.style.transform = '';
+      layer.style.filter = '';
       layer.style.zIndex = '';
       layer.removeAttribute('src');
     }
@@ -1621,6 +1688,7 @@
     // Load the new image on the back layer (still invisible)
     backEl.src = url;
     backEl.style.transform = transformStr;
+    backEl.style.filter = await exposureFilterFor(day);
 
     el.photosImageWrap.classList.add('has-photo');
     el.photosDayTag.textContent = `Day ${day}`;
@@ -1919,7 +1987,7 @@
     if (imgH > stageH) { imgH = stageH; imgW = imgH * aspect; }
     const imgX = innerX;
     const imgY = stageY;
-    drawPhotoBlock(ctx, imgX, imgY, imgW, imgH, img, alignment, ref, theme);
+    drawPhotoBlock(ctx, imgX, imgY, imgW, imgH, img, alignment, ref, theme, opts.exposureFilter);
 
     // 5b. Side panel on the right
     const sideX = imgX + imgW + sideGap;
@@ -1972,7 +2040,7 @@
     ctx.fillText(text, x + padX, y + pillH / 2 + 1);
   }
 
-  function drawPhotoBlock(ctx, x, y, w, h, img, alignment, ref, theme) {
+  function drawPhotoBlock(ctx, x, y, w, h, img, alignment, ref, theme, filter) {
     ctx.save();
     pathRoundedRect(ctx, x, y, w, h, 14);
     ctx.clip();
@@ -1983,7 +2051,9 @@
       ctx.translate(x, y);
       const m = alignment ? alignmentMatrixObject(alignment, ref, w, h) : null;
       if (m) ctx.transform(m.a, m.b, m.c, m.d, m.e, m.f);
+      if (filter) ctx.filter = filter; // exposure match
       drawImageCover(ctx, img, 0, 0, w, h);
+      ctx.filter = 'none';
       ctx.restore();
     }
     ctx.restore();
@@ -2281,6 +2351,15 @@
       phaseStartJourney, phaseName, phaseDuration,
     };
 
+    // Pre-compute the exposure filter per day (uses cached luminances).
+    const exposureFilters = {};
+    if (state.matchExposure) {
+      for (const d of days) {
+        if (videoCancelled) return;
+        exposureFilters[d] = await exposureFilterFor(d);
+      }
+    }
+
     try {
       // Phase 1: Sequence — side panel reads "Day N", mode pill "SEQUENCE"
       for (let i = 0; i < days.length; i++) {
@@ -2295,6 +2374,7 @@
           currentDay: d,
           headline: `Day ${phaseDay(d)}`,
           modePill: 'Sequence',
+          exposureFilter: exposureFilters[d] || '',
         });
         const dwell = i === 0 ? SEQ_INTRO_MS : seqPerPhoto;
         await delay(dwell);
@@ -2313,6 +2393,7 @@
             currentDay: firstD,
             headline: 'THEN',
             modePill: 'Then vs Now',
+            exposureFilter: exposureFilters[firstD] || '',
           });
           await delay(THEN_NOW_MS);
           tick(THEN_NOW_MS, 'Recording THEN…');
@@ -2331,6 +2412,7 @@
             currentDay: lastD,
             headline: 'NOW',
             modePill: 'Then vs Now',
+            exposureFilter: exposureFilters[lastD] || '',
           });
           await delay(THEN_NOW_MS);
           tick(THEN_NOW_MS, 'Recording NOW…');
@@ -2484,6 +2566,7 @@
   function openSettings() {
     el.settingsSheet.setAttribute('aria-hidden', 'false');
     if (state.startDate) el.startDateInput.value = state.startDate;
+    if (el.matchExposureToggle) el.matchExposureToggle.checked = !!state.matchExposure;
     if (state.currentPhase && PHASES[state.currentPhase]) {
       el.resetPhaseLabel.textContent = `Restart ${PHASES[state.currentPhase].name}`;
     }
@@ -2941,6 +3024,15 @@
 
   // Start date
   el.startDateInput.addEventListener('change', (e) => changeStartDate(e.target.value));
+
+  if (el.matchExposureToggle) {
+    el.matchExposureToggle.addEventListener('change', (e) => {
+      state.matchExposure = e.target.checked;
+      saveState();
+      restartPhotoCarousel();
+      showToast(state.matchExposure ? 'Exposure matching on' : 'Exposure matching off');
+    });
+  }
 
   // Import file
   el.importInput.addEventListener('change', (e) => {

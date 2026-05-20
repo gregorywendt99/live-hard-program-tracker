@@ -2186,6 +2186,26 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   padding: 12px 4px;
 }
 
+.settings-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--bg-secondary);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.settings-toggle-text { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.settings-toggle-text .settings-hint { margin: 0; padding: 0; }
+.settings-switch {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 .settings-label {
   font-size: 15px;
   font-weight: 500;
