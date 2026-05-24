@@ -901,6 +901,41 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   gap: 10px;
 }
 
+/* Shown above the checklist when editing a past day clicked from the calendar. */
+.day-edit-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-soft-strong);
+}
+
+.day-edit-banner-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.day-edit-back {
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 14px;
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s var(--ease-spring), opacity 0.18s var(--ease);
+}
+
+.day-edit-back:hover { transform: scale(1.04); }
+.day-edit-back:active { transform: scale(0.97); }
+
 .task {
   display: flex;
   align-items: stretch;
@@ -1851,6 +1886,7 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 .legend-swatch.complete { background: var(--accent); }
 .legend-swatch.today { background: transparent; border: 2px solid var(--accent); }
+.legend-swatch.selected { background: transparent; box-shadow: 0 0 0 2px var(--accent); }
 .legend-swatch.future { background: var(--bg-tertiary); }
 
 .calendar {
@@ -1864,17 +1900,32 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   aspect-ratio: 1;
   display: grid;
   place-items: center;
+  border: 0;
+  padding: 0;
+  margin: 0;
   border-radius: 8px;
   background: var(--bg-secondary);
+  font-family: inherit;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-tertiary);
   transition: transform 0.15s var(--ease-spring), background 0.18s var(--ease), color 0.18s var(--ease);
   cursor: default;
   font-variant-numeric: tabular-nums;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
+button.cal-day { cursor: pointer; }
 .cal-day:hover { transform: scale(1.08); z-index: 1; }
+.cal-day.future { cursor: default; }
+.cal-day.future:hover { transform: none; }
+
+/* The day the checklist is currently editing (a past day clicked into). */
+.cal-day.selected {
+  box-shadow: 0 0 0 2px var(--bg-elevated), 0 0 0 4px var(--accent);
+  z-index: 1;
+}
 
 .cal-day.complete {
   background: var(--accent);

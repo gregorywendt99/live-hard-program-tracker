@@ -245,15 +245,15 @@
         <section class="card tasks-card">
           <div class="card-header">
             <div>
-              <div class="card-eyebrow">Today</div>
+              <div class="card-eyebrow" id="tasksEyebrow">Today</div>
               <h2 class="card-title" id="todayHeading">Day 1 checklist</h2>
             </div>
             <div class="completion-badge" id="completionBadge">0 / 5</div>
           </div>
           <div class="tasks" id="tasksContainer"></div>
           <div class="task-actions">
-            <button class="btn btn-secondary" data-action="reset-today">Reset today</button>
-            <button class="btn btn-danger-soft" data-action="fail-day">I missed a task</button>
+            <button class="btn btn-secondary" id="resetDayBtn" data-action="reset-today">Reset today</button>
+            <button class="btn btn-danger-soft" id="failDayBtn" data-action="fail-day">I missed a task</button>
           </div>
         </section>
 
@@ -267,6 +267,7 @@
             <div class="legend">
               <span class="legend-item"><span class="legend-swatch complete"></span>Complete</span>
               <span class="legend-item"><span class="legend-swatch today"></span>Today</span>
+              <span class="legend-item"><span class="legend-swatch selected"></span>Editing</span>
               <span class="legend-item"><span class="legend-swatch future"></span>Upcoming</span>
             </div>
           </div>

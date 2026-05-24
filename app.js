@@ -90,6 +90,9 @@
   let photoSheetDay = null;
   let photoUploadInProgress = false;
   let authMode = 'signin';
+  // Which day of the current phase the checklist is editing.
+  // null = follow "today"; a number = a past day the user clicked to backfill.
+  let viewDayIndex = null;
 
   /* ----- State management --------------------------------------------- */
 
@@ -169,6 +172,29 @@
   function getCurrentDayIndex() {
     if (!state.phaseStartDate) return -1;
     return daysBetween(state.phaseStartDate, todayISO());
+  }
+  // The default day to show: today, but never past the phase's final day.
+  function anchorDayIndex() {
+    const phase = PHASES[state.currentPhase];
+    const today = getCurrentDayIndex();
+    if (!phase) return today;
+    return Math.min(today, phase.duration - 1);
+  }
+  // The day the checklist is currently editing. Clamped so it is never in the
+  // future and never past the phase's final day.
+  function getViewDayIndex() {
+    const phase = PHASES[state.currentPhase];
+    if (!phase) return getCurrentDayIndex();
+    const anchor = anchorDayIndex();
+    if (viewDayIndex === null) return anchor;
+    return Math.max(0, Math.min(viewDayIndex, anchor));
+  }
+  // 1-indexed overall journey day for whichever day the checklist is editing
+  // (photos are keyed by journey day, not per-phase day index).
+  function journeyDayForViewedDay() {
+    const dayIdx = getViewDayIndex();
+    if (!state.startDate || !state.phaseStartDate || dayIdx < 0) return journeyDayForToday();
+    return daysBetween(state.startDate, addDays(state.phaseStartDate, dayIdx)) + 1;
   }
   function isDayComplete(phaseId, dayIndex) {
     const day = state.days[phaseId]?.[dayIndex];
@@ -259,9 +285,12 @@
     remainingCount: $('#remainingCount'),
     overallDay: $('#overallDay'),
     streak: $('#streak'),
+    tasksEyebrow: $('#tasksEyebrow'),
     todayHeading: $('#todayHeading'),
     completionBadge: $('#completionBadge'),
     tasksContainer: $('#tasksContainer'),
+    resetDayBtn: $('#resetDayBtn'),
+    failDayBtn: $('#failDayBtn'),
     calendarHeading: $('#calendarHeading'),
     calendar: $('#calendar'),
     journey: $('#journey'),
@@ -290,6 +319,7 @@
     authSubmit: $('#authSubmit'),
     passwordHint: $('#passwordHint'),
     waterSheet: $('#waterSheet'),
+    waterTitle: $('#waterTitle'),
     waterTotal: $('#waterTotal'),
     waterPercent: $('#waterPercent'),
     waterBarFill: $('#waterBarFill'),
@@ -363,6 +393,10 @@
   }
 
   function render() {
+    // A full re-render always returns the checklist to today. Day-level edits
+    // (toggling a task, logging water) use the partial render* helpers instead,
+    // so a clicked-into past day stays put while you edit it.
+    viewDayIndex = null;
     applyTheme();
     applyPhotoAspect();
     if (appPhase === 'loading') { showSection('boot'); return; }
@@ -459,17 +493,17 @@
   function renderTasks() {
     const phase = PHASES[state.currentPhase];
     if (!phase) return;
-    const dayIdx = getCurrentDayIndex();
+    const today = getCurrentDayIndex();
+    const dayIdx = getViewDayIndex();
+    const isOtherDay = dayIdx !== anchorDayIndex();
     el.todayHeading.textContent = `Day ${Math.max(1, dayIdx + 1)} checklist`;
+    if (el.tasksEyebrow) el.tasksEyebrow.textContent = isOtherDay ? 'Catching up' : 'Today';
+    if (el.resetDayBtn) el.resetDayBtn.textContent = isOtherDay ? 'Reset this day' : 'Reset today';
+    if (el.failDayBtn) el.failDayBtn.hidden = isOtherDay;
 
     if (dayIdx < 0) {
       el.tasksContainer.innerHTML = '<div class="settings-hint" style="text-align:center;padding:24px;">This phase hasn\'t started yet.</div>';
       el.completionBadge.textContent = '0 / ' + phase.tasks.length;
-      return;
-    }
-    if (dayIdx >= phase.duration) {
-      el.tasksContainer.innerHTML = '<div class="settings-hint" style="text-align:center;padding:24px;">All days for this phase have passed.</div>';
-      el.completionBadge.textContent = '— / ' + phase.tasks.length;
       return;
     }
 
@@ -478,9 +512,20 @@
     el.completionBadge.textContent = `${checkedCount} / ${phase.tasks.length}`;
     el.completionBadge.classList.toggle('complete', checkedCount === phase.tasks.length);
 
-    const journeyDayNum = state.startDate ? daysBetween(state.startDate, todayISO()) + 1 : null;
+    const journeyDayNum = journeyDayForViewedDay();
 
-    el.tasksContainer.innerHTML = phase.tasks.map((taskId) => {
+    let banner = '';
+    if (isOtherDay) {
+      const dateISO = state.phaseStartDate ? addDays(state.phaseStartDate, dayIdx) : null;
+      const backLabel = anchorDayIndex() === today ? 'Back to today' : 'Back to latest';
+      banner = `
+        <div class="day-edit-banner">
+          <span class="day-edit-banner-text">Editing Day ${dayIdx + 1}${dateISO ? ' · ' + formatDate(dateISO) : ''}</span>
+          <button type="button" class="day-edit-back" data-action="view-today">${backLabel}</button>
+        </div>`;
+    }
+
+    const tasksHTML = phase.tasks.map((taskId) => {
       const t = TASKS[taskId];
       const checked = !!dayState.tasks?.[taskId];
       const isWater = taskId === 'water';
@@ -492,7 +537,8 @@
         detail = `${dayState.water_oz || 0} / ${WATER_TARGET} fl oz · tap to log`;
         mainAction = ' data-action="open-water"';
       } else if (isPhoto) {
-        detail = hasPhoto ? 'Tap to view or replace today\'s photo' : 'Tap to upload today\'s photo';
+        const photoNoun = isOtherDay ? "this day's photo" : "today's photo";
+        detail = hasPhoto ? `Tap to view or replace ${photoNoun}` : `Tap to upload ${photoNoun}`;
         mainAction = ' data-action="open-photo"';
       }
       return `
@@ -509,25 +555,34 @@
           </button>
         </div>`;
     }).join('');
+
+    el.tasksContainer.innerHTML = banner + tasksHTML;
   }
 
   function renderCalendar() {
     const phase = PHASES[state.currentPhase];
     if (!phase) return;
-    const dayIdx = getCurrentDayIndex();
+    const today = getCurrentDayIndex();
+    const viewIdx = getViewDayIndex();
     el.calendarHeading.textContent = `${phase.name} calendar`;
     const cells = [];
     for (let i = 0; i < phase.duration; i++) {
       const isComplete = isDayComplete(state.currentPhase, i);
-      const isToday = i === dayIdx;
-      const isFuture = i > dayIdx;
+      const isToday = i === today;
+      const isFuture = i > today;
+      const isSelected = i === viewIdx && !isFuture && !isToday;
       const cls = ['cal-day'];
       if (isComplete) cls.push('complete');
       if (isToday) cls.push('today');
       else if (isFuture) cls.push('future');
+      if (isSelected) cls.push('selected');
       const dateLabel = state.phaseStartDate ? formatShortDate(addDays(state.phaseStartDate, i)) : '';
-      const title = `Day ${i + 1}${dateLabel ? ' · ' + dateLabel : ''}${isComplete ? ' · Complete' : ''}`;
-      cells.push(`<div class="${cls.join(' ')}" title="${title}">${i + 1}</div>`);
+      const title = `Day ${i + 1}${dateLabel ? ' · ' + dateLabel : ''}${isComplete ? ' · Complete' : ''}${isFuture ? '' : ' · tap to edit'}`;
+      if (isFuture) {
+        cells.push(`<div class="${cls.join(' ')}" title="${title}">${i + 1}</div>`);
+      } else {
+        cells.push(`<button type="button" class="${cls.join(' ')}" data-action="select-day" data-day-index="${i}" aria-pressed="${i === viewIdx}" title="${title}">${i + 1}</button>`);
+      }
     }
     el.calendar.innerHTML = cells.join('');
   }
@@ -574,8 +629,17 @@
 
   /* ----- Tracker actions ---------------------------------------------- */
 
-  function toggleTodayTask(taskId) {
-    const dayIdx = getCurrentDayIndex();
+  // Jump the checklist to a day of the current phase (clicked in the calendar).
+  function selectDay(idx) {
+    viewDayIndex = (idx === anchorDayIndex()) ? null : idx;
+    renderTasks(); renderCalendar();
+    // The checklist sits above the calendar, so bring it back into view.
+    const card = el.tasksContainer.closest('.tasks-card');
+    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function toggleTask(taskId) {
+    const dayIdx = getViewDayIndex();
     const phase = PHASES[state.currentPhase];
     if (!phase || dayIdx < 0 || dayIdx >= phase.duration) return;
     if (!state.days[state.currentPhase][dayIdx]) {
@@ -585,7 +649,7 @@
     day.tasks[taskId] = !day.tasks[taskId];
     saveState();
     renderTasks(); renderHero(); renderCalendar(); renderJourney();
-    if (PHASES[state.currentPhase].tasks.every((t) => day.tasks[t])) {
+    if (phase.tasks.every((t) => day.tasks[t])) {
       const isLast = dayIdx === phase.duration - 1;
       if (isLast) { showToast(`${phase.name} complete — incredible work.`); autoAdvanceIfPossible(); }
       else { showToast(`Day ${dayIdx + 1} done. Keep going.`); }
@@ -594,8 +658,8 @@
 
   /* ----- Water tracking ------------------------------------------------ */
 
-  function ensureToday() {
-    const dayIdx = getCurrentDayIndex();
+  function ensureViewDay() {
+    const dayIdx = getViewDayIndex();
     if (dayIdx < 0 || !PHASES[state.currentPhase] || dayIdx >= PHASES[state.currentPhase].duration) return null;
     if (!state.days[state.currentPhase][dayIdx]) {
       state.days[state.currentPhase][dayIdx] = { tasks: {} };
@@ -614,11 +678,14 @@
   }
 
   function renderWaterSheet() {
-    const dayIdx = getCurrentDayIndex();
+    const dayIdx = getViewDayIndex();
     const day = state.days[state.currentPhase]?.[dayIdx] || { tasks: {} };
     const total = day.water_oz || 0;
     const pct = Math.min(100, Math.round((total / WATER_TARGET) * 100));
 
+    if (el.waterTitle) {
+      el.waterTitle.textContent = dayIdx === anchorDayIndex() ? 'Water log' : `Water log · Day ${dayIdx + 1}`;
+    }
     el.waterTotal.textContent = total;
     el.waterPercent.textContent = `${pct}%`;
     el.waterBarFill.style.width = `${pct}%`;
@@ -640,7 +707,7 @@
 
   function addWater(oz) {
     if (!Number.isFinite(oz) || oz <= 0) return;
-    const day = ensureToday();
+    const day = ensureViewDay();
     if (!day) return;
     day.water_oz = (day.water_oz || 0) + oz;
     let toastMsg = `+${oz} fl oz`;
@@ -674,7 +741,7 @@
   }
 
   function resetWaterToday() {
-    const dayIdx = getCurrentDayIndex();
+    const dayIdx = getViewDayIndex();
     if (dayIdx < 0) return;
     const day = state.days[state.currentPhase][dayIdx];
     if (!day) return;
@@ -683,7 +750,7 @@
     saveState();
     renderWaterSheet();
     renderTasks(); renderHero(); renderCalendar(); renderJourney();
-    showToast('Today\'s water cleared.');
+    showToast(dayIdx === anchorDayIndex() ? 'Today\'s water cleared.' : `Day ${dayIdx + 1} water cleared.`);
   }
 
   /* ----- Photos --------------------------------------------------------- */
@@ -891,15 +958,14 @@
         applyPhotoAspect();
       }
 
-      const todayDay = journeyDayForToday();
-      if (dayNum === todayDay) {
-        const target = phaseDayFromJourneyDay(dayNum);
-        if (target && state.currentPhase === target.phaseId) {
-          if (!state.days[target.phaseId][target.dayIndex]) {
-            state.days[target.phaseId][target.dayIndex] = { tasks: {} };
-          }
-          state.days[target.phaseId][target.dayIndex].tasks.photo = true;
+      // Tick the photo task for whichever day this photo belongs to (today or
+      // a past day being backfilled), as long as it maps to the current phase.
+      const target = phaseDayFromJourneyDay(dayNum);
+      if (target && state.currentPhase === target.phaseId) {
+        if (!state.days[target.phaseId][target.dayIndex]) {
+          state.days[target.phaseId][target.dayIndex] = { tasks: {} };
         }
+        state.days[target.phaseId][target.dayIndex].tasks.photo = true;
       }
 
       saveState();
@@ -2445,12 +2511,14 @@
   }
 
   function resetToday() {
-    const dayIdx = getCurrentDayIndex();
+    const dayIdx = getViewDayIndex();
     if (dayIdx < 0) return;
     if (state.days[state.currentPhase][dayIdx]) {
       state.days[state.currentPhase][dayIdx] = { tasks: {} };
-      saveState(); render();
-      showToast('Today reset.');
+      saveState();
+      // Partial render so a clicked-into past day stays in view after reset.
+      renderTasks(); renderHero(); renderCalendar(); renderJourney();
+      showToast(dayIdx === anchorDayIndex() ? 'Today reset.' : `Day ${dayIdx + 1} reset.`);
     }
   }
 
@@ -2865,9 +2933,15 @@
       case 'sign-in-google': signInWithGoogle(); break;
       case 'toggle-task': {
         const tid = t.dataset.taskId;
-        if (tid) toggleTodayTask(tid);
+        if (tid) toggleTask(tid);
         break;
       }
+      case 'select-day': {
+        const idx = Number(t.dataset.dayIndex);
+        if (Number.isInteger(idx)) selectDay(idx);
+        break;
+      }
+      case 'view-today': selectDay(anchorDayIndex()); break;
       case 'open-water': openWaterSheet(); break;
       case 'close-water': closeWaterSheet(); break;
       case 'water-add': {
@@ -2881,7 +2955,7 @@
         break;
       }
       case 'reset-water-today': resetWaterToday(); break;
-      case 'open-photo': openPhotoSheet(); break;
+      case 'open-photo': openPhotoSheet(journeyDayForViewedDay()); break;
       case 'close-photo':
         if (alignState) closeAlignView();
         else if (!photoUploadInProgress) closePhotoSheet();
