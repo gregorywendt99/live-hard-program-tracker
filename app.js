@@ -3292,7 +3292,7 @@
       state.matchExposure = e.target.checked;
       saveState();
       restartPhotoCarousel();
-      showToast(state.matchExposure ? 'Exposure matching on' : 'Exposure matching off');
+      showToast(state.matchExposure ? 'Brightness matching on' : 'Brightness matching off');
     });
   }
 
