@@ -350,10 +350,6 @@
     photoEditStage: $('#photoEditStage'),
     photoEditActions: $('#photoEditActions'),
     photoEditCanvas: $('#photoEditCanvas'),
-    photoEditMagic: $('#photoEditMagic'),
-    photoEditLasso: $('#photoEditLasso'),
-    photoEditErase: $('#photoEditErase'),
-    photoEditRestore: $('#photoEditRestore'),
     photoEditBrush: $('#photoEditBrush'),
     photoEditSliderLabel: $('#photoEditSliderLabel'),
     photoEditMagnifier: $('#photoEditMagnifier'),
@@ -1599,12 +1595,9 @@
     editState = {
       day, w, h, work, wctx, baseImg,
       initialAlpha: baseImg.data.slice(0), // for Reset (whole RGBA copy is fine)
-      tool: 'magic',
-      brush: Math.max(10, Math.round(Math.max(w, h) * 0.04)),
-      tolerance: 50,
-      searchRadius: 8,
-      gradient: null, lassoPts: null, lassoLastRaw: null, lassoSmooth: null,
-      drawing: false, last: null, undo: [],
+      smoothing: 85, // 0–100; higher = smoother line
+      lassoPts: null, lassoLastRaw: null, lassoSmooth: null,
+      drawing: false, undo: [],
     };
 
     const cv = el.photoEditCanvas;
@@ -1627,107 +1620,10 @@
   }
 
   function updateEditTools() {
-    if (!editState) return;
-    if (el.photoEditMagic) el.photoEditMagic.classList.toggle('active', editState.tool === 'magic');
-    if (el.photoEditLasso) el.photoEditLasso.classList.toggle('active', editState.tool === 'lasso');
-    if (el.photoEditErase) el.photoEditErase.classList.toggle('active', editState.tool === 'erase');
-    if (el.photoEditRestore) el.photoEditRestore.classList.toggle('active', editState.tool === 'restore');
-    // Build the edge map the first time the lasso is selected.
-    if (editState.tool === 'lasso' && !editState.gradient) computeGradient();
-    updateEditSlider();
-  }
-
-  // The slider relabels per tool: tolerance (Magic), snap radius (Lasso),
-  // brush size (brushes).
-  function updateEditSlider() {
     if (!editState || !el.photoEditBrush) return;
+    if (el.photoEditSliderLabel) el.photoEditSliderLabel.textContent = 'Smoothing';
     const s = el.photoEditBrush;
-    const setLabel = (t) => { if (el.photoEditSliderLabel) el.photoEditSliderLabel.textContent = t; };
-    if (editState.tool === 'magic') {
-      setLabel('Tolerance'); s.min = '5'; s.max = '150'; s.value = String(editState.tolerance);
-    } else if (editState.tool === 'lasso') {
-      setLabel('Snap radius'); s.min = '0'; s.max = '30'; s.value = String(editState.searchRadius);
-    } else {
-      setLabel('Brush size'); s.min = '6'; s.max = '120'; s.value = String(editState.brush);
-    }
-  }
-
-  // Magic erase: from the tapped pixel, flood-fill the contiguous run of
-  // similar-colored foreground pixels (within tolerance) and make it
-  // transparent — like a magic wand + delete. Stops at color edges and at
-  // already-removed background, so tapping the towel clears just the towel.
-  function magicErase(sx, sy) {
-    const { baseImg, w, h, tolerance } = editState;
-    const data = baseImg.data;
-    const px = Math.round(sx), py = Math.round(sy);
-    if (px < 0 || py < 0 || px >= w || py >= h) return;
-    const seed = py * w + px;
-    if (data[seed * 4 + 3] === 0) return; // tapped background — nothing to remove
-    const sr = data[seed * 4], sg = data[seed * 4 + 1], sb = data[seed * 4 + 2];
-    const tol2 = tolerance * tolerance;
-    const seen = new Uint8Array(w * h);
-    const stack = new Int32Array(w * h);
-    let sp = 0; stack[sp++] = seed; seen[seed] = 1;
-    while (sp > 0) {
-      const idx = stack[--sp];
-      const o = idx * 4;
-      if (data[o + 3] === 0) continue;
-      const dr = data[o] - sr, dg = data[o + 1] - sg, db = data[o + 2] - sb;
-      if (dr * dr + dg * dg + db * db > tol2) continue;
-      data[o + 3] = 0;
-      const x = idx % w, y = (idx / w) | 0;
-      if (x > 0     && !seen[idx - 1]) { seen[idx - 1] = 1; stack[sp++] = idx - 1; }
-      if (x < w - 1 && !seen[idx + 1]) { seen[idx + 1] = 1; stack[sp++] = idx + 1; }
-      if (y > 0     && !seen[idx - w]) { seen[idx - w] = 1; stack[sp++] = idx - w; }
-      if (y < h - 1 && !seen[idx + w]) { seen[idx + w] = 1; stack[sp++] = idx + w; }
-    }
-  }
-
-  // --- Magnetic lasso ---
-
-  // Sobel edge magnitude of the original image (0–255), computed once per
-  // session. This is the "where are the strong color boundaries" map the lasso
-  // snaps to.
-  function computeGradient() {
-    const { baseImg, w, h } = editState;
-    const d = baseImg.data;
-    const lum = new Float32Array(w * h);
-    for (let i = 0; i < w * h; i++) lum[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
-    const g = new Float32Array(w * h);
-    let max = 1;
-    for (let y = 1; y < h - 1; y++) {
-      for (let x = 1; x < w - 1; x++) {
-        const i = y * w + x;
-        const gx = -lum[i - w - 1] - 2 * lum[i - 1] - lum[i + w - 1] + lum[i - w + 1] + 2 * lum[i + 1] + lum[i + w + 1];
-        const gy = -lum[i - w - 1] - 2 * lum[i - w] - lum[i - w + 1] + lum[i + w - 1] + 2 * lum[i + w] + lum[i + w + 1];
-        const m = Math.sqrt(gx * gx + gy * gy);
-        g[i] = m; if (m > max) max = m;
-      }
-    }
-    const scale = 255 / max;
-    for (let i = 0; i < w * h; i++) g[i] *= scale;
-    editState.gradient = g;
-  }
-
-  // Snap a raw point to the strongest edge within searchRadius, preferring
-  // edges close to where the finger actually is.
-  function lassoSnap(rawX, rawY) {
-    const { gradient, w, h, searchRadius: R } = editState;
-    const cx = Math.round(rawX), cy = Math.round(rawY);
-    if (!gradient) return { x: cx, y: cy };
-    let best = -Infinity, bx = cx, by = cy;
-    const x0 = Math.max(0, cx - R), x1 = Math.min(w - 1, cx + R);
-    const y0 = Math.max(0, cy - R), y1 = Math.min(h - 1, cy + R);
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const dx = x - cx, dy = y - cy;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist > R) continue;
-        const score = gradient[y * w + x] - 4 * dist; // edge strength, distance-penalized
-        if (score > best) { best = score; bx = x; by = y; }
-      }
-    }
-    return { x: bx, y: by };
+    s.min = '0'; s.max = '100'; s.value = String(editState.smoothing);
   }
 
   // Trace a smooth curve through the points (quadratic through midpoints) so
@@ -1801,29 +1697,6 @@
     };
   }
 
-  function editPaintAt(x, y) {
-    const { baseImg, w, h, brush, tool } = editState;
-    const alpha = tool === 'erase' ? 0 : 255;
-    const r = brush, r2 = r * r;
-    const data = baseImg.data;
-    const x0 = Math.max(0, Math.floor(x - r)), x1 = Math.min(w - 1, Math.ceil(x + r));
-    const y0 = Math.max(0, Math.floor(y - r)), y1 = Math.min(h - 1, Math.ceil(y + r));
-    for (let py = y0; py <= y1; py++) {
-      for (let px = x0; px <= x1; px++) {
-        const dx = px - x, dy = py - y;
-        if (dx * dx + dy * dy <= r2) data[(py * w + px) * 4 + 3] = alpha;
-      }
-    }
-  }
-
-  // Paint a stroke from `a` to `b` so fast drags don't leave gaps.
-  function editStroke(a, b) {
-    const dist = Math.hypot(b.x - a.x, b.y - a.y);
-    const step = Math.max(1, editState.brush / 3);
-    const n = Math.max(1, Math.ceil(dist / step));
-    for (let i = 0; i <= n; i++) editPaintAt(a.x + (b.x - a.x) * (i / n), a.y + (b.y - a.y) * (i / n));
-  }
-
   function pushEditUndo() {
     editState.undo.push(editState.baseImg.data.slice(0));
     if (editState.undo.length > 20) editState.undo.shift();
@@ -1880,66 +1753,47 @@
     if (el.photoEditMagnifier) el.photoEditMagnifier.hidden = true;
   }
 
+  // EMA factor from the smoothing setting: higher smoothing → smaller alpha →
+  // smoother (but laggier) line.
+  function lassoAlpha() {
+    return Math.max(0.05, 0.5 - (editState.smoothing / 100) * 0.45);
+  }
+
   function editPointerDown(e) {
     if (!editState) return;
     e.preventDefault();
     try { el.photoEditCanvas.setPointerCapture(e.pointerId); } catch {}
     const p = editPointerPos(e);
-    if (editState.tool === 'lasso') {
-      // Collect a snapped + smoothed outline; the erase happens on release.
-      editState.drawing = true;
-      const s0 = lassoSnap(p.x, p.y);
-      editState.lassoSmooth = { x: s0.x, y: s0.y };
-      editState.lassoPts = [{ x: s0.x, y: s0.y }];
-      editState.lassoLastRaw = p;
-      renderLasso();
-      showEditMagnifier(e);
-      return;
-    }
-    pushEditUndo();
-    if (editState.tool === 'magic') {
-      editState.drawing = false;
-      magicErase(p.x, p.y);
-      renderEdit();
-      return;
-    }
+    // Start a smoothed freehand outline; the erase happens on release.
     editState.drawing = true;
-    editState.last = p;
-    editPaintAt(p.x, p.y);
-    renderEdit();
+    editState.lassoSmooth = { x: p.x, y: p.y };
+    editState.lassoPts = [{ x: p.x, y: p.y }];
+    editState.lassoLastRaw = p;
+    renderLasso();
     showEditMagnifier(e);
   }
 
   function editPointerMove(e) {
     if (!editState || !editState.drawing) return;
     const p = editPointerPos(e);
-    if (editState.tool === 'lasso') {
-      // Add a snapped + smoothed vertex once the finger has moved a few pixels.
-      const last = editState.lassoLastRaw;
-      if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= 2) {
-        const snapped = lassoSnap(p.x, p.y);
-        // Exponential smoothing: dampen jitter from hand shake and edge-snap
-        // jumps so the line flows instead of zig-zagging.
-        const sm = editState.lassoSmooth;
-        const a = 0.3;
-        sm.x += a * (snapped.x - sm.x);
-        sm.y += a * (snapped.y - sm.y);
-        editState.lassoPts.push({ x: sm.x, y: sm.y });
-        editState.lassoLastRaw = p;
-        renderLasso();
-      }
-      updateEditMagnifier(e);
-      return;
+    // Add an exponentially-smoothed vertex once the finger has moved a bit, so
+    // hand-shake is damped and the line flows instead of zig-zagging.
+    const last = editState.lassoLastRaw;
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= 2) {
+      const sm = editState.lassoSmooth;
+      const a = lassoAlpha();
+      sm.x += a * (p.x - sm.x);
+      sm.y += a * (p.y - sm.y);
+      editState.lassoPts.push({ x: sm.x, y: sm.y });
+      editState.lassoLastRaw = p;
+      renderLasso();
     }
-    editStroke(editState.last, p);
-    editState.last = p;
-    renderEdit();
     updateEditMagnifier(e);
   }
 
   function editPointerUp() {
     if (!editState) return;
-    if (editState.tool === 'lasso' && editState.drawing) {
+    if (editState.drawing) {
       if (editState.lassoPts && editState.lassoPts.length >= 3) {
         pushEditUndo();
         lassoApply();
@@ -3915,14 +3769,6 @@
       case 'touchup-save': saveEdit(); break;
       case 'touchup-undo': editUndo(); break;
       case 'touchup-reset': editReset(); break;
-      case 'touchup-tool': {
-        const tool = t.dataset.tool;
-        if (editState && ['magic', 'lasso', 'erase', 'restore'].includes(tool)) {
-          editState.tool = tool;
-          updateEditTools();
-        }
-        break;
-      }
       case 'open-align': openAlignView(); break;
       case 'photo-align-cancel': closeAlignView(); break;
       case 'photo-align-save': savePhotoAlignment(); break;
@@ -4014,10 +3860,7 @@
     el.photoEditBrush.addEventListener('input', (e) => {
       if (!editState) return;
       const v = Number(e.target.value);
-      if (!v) return;
-      if (editState.tool === 'magic') editState.tolerance = v;
-      else if (editState.tool === 'lasso') editState.searchRadius = v;
-      else editState.brush = v;
+      if (Number.isFinite(v)) editState.smoothing = v;
     });
   }
   if (el.photoEditCanvas) {
