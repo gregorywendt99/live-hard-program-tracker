@@ -350,9 +350,11 @@
     photoEditStage: $('#photoEditStage'),
     photoEditActions: $('#photoEditActions'),
     photoEditCanvas: $('#photoEditCanvas'),
+    photoEditMagic: $('#photoEditMagic'),
     photoEditErase: $('#photoEditErase'),
     photoEditRestore: $('#photoEditRestore'),
     photoEditBrush: $('#photoEditBrush'),
+    photoEditSliderLabel: $('#photoEditSliderLabel'),
     photoAlignBtn: $('#photoAlignBtn'),
     photoAlignStage: $('#photoAlignStage'),
     photoAlignActions: $('#photoAlignActions'),
@@ -1594,8 +1596,9 @@
     editState = {
       day, w, h, work, wctx, baseImg,
       initialAlpha: baseImg.data.slice(0), // for Reset (whole RGBA copy is fine)
-      tool: 'erase',
+      tool: 'magic',
       brush: Math.max(10, Math.round(Math.max(w, h) * 0.04)),
+      tolerance: 50,
       drawing: false, last: null, undo: [],
     };
 
@@ -1605,7 +1608,6 @@
     el.photoSheetActions.style.display = 'none';
     el.photoEditStage.hidden = false;
     el.photoEditActions.hidden = false;
-    if (el.photoEditBrush) el.photoEditBrush.value = String(editState.brush);
     updateEditTools();
     renderEdit();
   }
@@ -1620,8 +1622,54 @@
 
   function updateEditTools() {
     if (!editState) return;
+    if (el.photoEditMagic) el.photoEditMagic.classList.toggle('active', editState.tool === 'magic');
     if (el.photoEditErase) el.photoEditErase.classList.toggle('active', editState.tool === 'erase');
     if (el.photoEditRestore) el.photoEditRestore.classList.toggle('active', editState.tool === 'restore');
+    updateEditSlider();
+  }
+
+  // The slider controls tolerance for Magic (tap), brush size for the brushes.
+  function updateEditSlider() {
+    if (!editState || !el.photoEditBrush) return;
+    const s = el.photoEditBrush;
+    if (editState.tool === 'magic') {
+      if (el.photoEditSliderLabel) el.photoEditSliderLabel.textContent = 'Tolerance';
+      s.min = '5'; s.max = '150'; s.value = String(editState.tolerance);
+    } else {
+      if (el.photoEditSliderLabel) el.photoEditSliderLabel.textContent = 'Brush size';
+      s.min = '6'; s.max = '120'; s.value = String(editState.brush);
+    }
+  }
+
+  // Magic erase: from the tapped pixel, flood-fill the contiguous run of
+  // similar-colored foreground pixels (within tolerance) and make it
+  // transparent — like a magic wand + delete. Stops at color edges and at
+  // already-removed background, so tapping the towel clears just the towel.
+  function magicErase(sx, sy) {
+    const { baseImg, w, h, tolerance } = editState;
+    const data = baseImg.data;
+    const px = Math.round(sx), py = Math.round(sy);
+    if (px < 0 || py < 0 || px >= w || py >= h) return;
+    const seed = py * w + px;
+    if (data[seed * 4 + 3] === 0) return; // tapped background — nothing to remove
+    const sr = data[seed * 4], sg = data[seed * 4 + 1], sb = data[seed * 4 + 2];
+    const tol2 = tolerance * tolerance;
+    const seen = new Uint8Array(w * h);
+    const stack = new Int32Array(w * h);
+    let sp = 0; stack[sp++] = seed; seen[seed] = 1;
+    while (sp > 0) {
+      const idx = stack[--sp];
+      const o = idx * 4;
+      if (data[o + 3] === 0) continue;
+      const dr = data[o] - sr, dg = data[o + 1] - sg, db = data[o + 2] - sb;
+      if (dr * dr + dg * dg + db * db > tol2) continue;
+      data[o + 3] = 0;
+      const x = idx % w, y = (idx / w) | 0;
+      if (x > 0     && !seen[idx - 1]) { seen[idx - 1] = 1; stack[sp++] = idx - 1; }
+      if (x < w - 1 && !seen[idx + 1]) { seen[idx + 1] = 1; stack[sp++] = idx + 1; }
+      if (y > 0     && !seen[idx - w]) { seen[idx - w] = 1; stack[sp++] = idx - w; }
+      if (y < h - 1 && !seen[idx + w]) { seen[idx + w] = 1; stack[sp++] = idx + w; }
+    }
   }
 
   function renderEdit() {
@@ -1675,8 +1723,15 @@
     // Snapshot alpha for undo (cap history at 20 steps).
     editState.undo.push(editState.baseImg.data.slice(0));
     if (editState.undo.length > 20) editState.undo.shift();
-    editState.drawing = true;
     const p = editPointerPos(e);
+    if (editState.tool === 'magic') {
+      // Single tap removes a region; no drag-painting.
+      editState.drawing = false;
+      magicErase(p.x, p.y);
+      renderEdit();
+      return;
+    }
+    editState.drawing = true;
     editState.last = p;
     editPaintAt(p.x, p.y);
     renderEdit();
@@ -3749,7 +3804,11 @@
   // Cut-out touch-up: brush size + drawing on the edit canvas
   if (el.photoEditBrush) {
     el.photoEditBrush.addEventListener('input', (e) => {
-      if (editState) editState.brush = Number(e.target.value) || editState.brush;
+      if (!editState) return;
+      const v = Number(e.target.value);
+      if (!v) return;
+      if (editState.tool === 'magic') editState.tolerance = v;
+      else editState.brush = v;
     });
   }
   if (el.photoEditCanvas) {
