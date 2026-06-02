@@ -308,6 +308,7 @@
     removeBgToggle: $('#removeBgToggle'),
     bgColorRow: $('#bgColorRow'),
     bgColorInput: $('#bgColorInput'),
+    photosBgStatus: $('#photosBgStatus'),
     waitProgressFill: $('#waitProgressFill'),
     waitDaysDone: $('#waitDaysDone'),
     waitDaysLeft: $('#waitDaysLeft'),
@@ -419,6 +420,10 @@
     renderJourney();
     restartPhotoCarousel();
     autoAdvanceIfPossible();
+    // If removal is on, backfill any photos still missing a cut-out (e.g. ones
+    // imported before, or a run interrupted by a reload). Idempotent: it skips
+    // days that already have a cut-out or are already queued.
+    if (state.removeBg) enqueueAllCutouts();
   }
 
   function applyTheme() {
@@ -900,6 +905,124 @@
     return outBlob;
   }
 
+  /* ----- Background-removal queue ------------------------------------- */
+
+  // Cut-outs are produced lazily, off the critical path. Uploads save the
+  // original immediately and enqueue the day; enabling the feature enqueues
+  // every existing photo — first then last first, so "Then vs Now" gets clean
+  // shots soonest, then the rest in order. One day is processed at a time so
+  // the heavy model work never piles up.
+  const bgQueue = [];
+  const bgQueued = new Set();
+  let bgWorkerRunning = false;
+
+  function needsCutout(day) {
+    return !!(state.photos?.[day] && !state.photos[day].hasCutout);
+  }
+
+  function enqueueCutout(day) {
+    if (!state.removeBg || !needsCutout(day) || bgQueued.has(day)) return;
+    bgQueued.add(day);
+    bgQueue.push(day);
+    runBgQueue();
+  }
+
+  function enqueueAllCutouts() {
+    if (!state.removeBg) return;
+    const days = uploadedDays(); // ascending
+    if (!days.length) return;
+    const first = days[0];
+    const last = days[days.length - 1];
+    // Priority: first, then last, then everything else in order.
+    const ordered = [first];
+    if (last !== first) ordered.push(last);
+    for (const d of days) if (d !== first && d !== last) ordered.push(d);
+    for (const d of ordered) {
+      if (needsCutout(d) && !bgQueued.has(d)) { bgQueued.add(d); bgQueue.push(d); }
+    }
+    runBgQueue();
+  }
+
+  function clearBgQueue() {
+    bgQueue.length = 0;
+    bgQueued.clear();
+    updateBgStatus();
+  }
+
+  // Always reads the ORIGINAL doc (bypassing the cut-out variant), so we feed
+  // the model the real photo even once a cut-out exists.
+  async function fetchOriginalDataURL(day) {
+    const ref = photoDocRef(day);
+    if (!ref) return null;
+    try {
+      const snap = await ref.get();
+      return snap.exists ? (snap.data()?.data || null) : null;
+    } catch (e) { console.error('Original fetch failed', e); return null; }
+  }
+
+  async function processCutoutForDay(day) {
+    const originalUrl = await fetchOriginalDataURL(day);
+    if (!originalUrl) return;
+    const srcBlob = await (await fetch(originalUrl)).blob();
+    const composited = await cutoutOntoColor(srcBlob, state.bgColor);
+    const { dataUrl: cutoutUrl } = await compressImageToDataURL(composited);
+    const cref = cutoutDocRef(day);
+    if (cref) await cref.set({ data: cutoutUrl, bgColor: state.bgColor, uploadedAt: new Date().toISOString() });
+    if (!state.photos[day]) state.photos[day] = {};
+    state.photos[day].hasCutout = true;
+    state.photos[day].cutoutBgColor = state.bgColor;
+    saveState();
+    // Surface it: drop caches so the next carousel pass shows the cut-out.
+    photoDataCache.delete(day);
+    luminanceCache.delete(day);
+    if (photoSheetDay === day) renderPhotoSheet();
+  }
+
+  async function runBgQueue() {
+    if (bgWorkerRunning || !bgQueue.length) return;
+    if (!state.removeBg || !firestore || !currentUser) return;
+    bgWorkerRunning = true;
+    updateBgStatus();
+    // Load the model once up front; if it can't load, don't hammer it per photo.
+    try {
+      await loadBgRemover();
+    } catch (e) {
+      console.error('Background remover unavailable', e);
+      showToast('Background remover unavailable right now.');
+      bgWorkerRunning = false;
+      clearBgQueue();
+      return;
+    }
+    try {
+      while (bgQueue.length && state.removeBg) {
+        const day = bgQueue.shift();
+        bgQueued.delete(day);
+        updateBgStatus();
+        if (!needsCutout(day)) continue;
+        try { await processCutoutForDay(day); }
+        catch (e) { console.error('Background cut-out failed for day', day, e); }
+        // Yield between heavy items so the UI stays responsive.
+        await new Promise((r) => setTimeout(r, 30));
+      }
+    } finally {
+      bgWorkerRunning = false;
+      updateBgStatus();
+      restartPhotoCarousel(); // reflect the finished cut-outs
+    }
+  }
+
+  function updateBgStatus() {
+    const node = el.photosBgStatus;
+    if (!node) return;
+    const remaining = bgQueue.length + (bgWorkerRunning ? 1 : 0);
+    if (state.removeBg && bgWorkerRunning && remaining > 0) {
+      node.hidden = false;
+      node.textContent = remaining > 1 ? `Removing backgrounds… ${remaining} left` : 'Removing background…';
+    } else {
+      node.hidden = true;
+    }
+  }
+
   function photoDocRef(dayNum) {
     if (!firestore || !currentUser) return null;
     return firestore.collection('users').doc(currentUser.uid).collection('photos').doc(String(dayNum));
@@ -1027,50 +1150,26 @@
     try {
       const nowISO = new Date().toISOString();
 
-      // 1) Always compress + store the ORIGINAL. Keeping it is what makes
-      //    background removal reversible — the user can switch back anytime.
+      // Compress + store the ORIGINAL. This is all the user waits for — the
+      // background removal (if on) runs afterward, off the critical path.
       const { dataUrl: originalUrl, aspectRatio } = await compressImageToDataURL(file);
-      el.photoProgressFill.style.width = '50%';
+      el.photoProgressFill.style.width = '75%';
       el.photoProgressLabel.textContent = 'Saving…';
       await photoDocRef(dayNum).set({ data: originalUrl, uploadedAt: nowISO });
 
-      // 2) Optionally derive + store a background-removed copy alongside it (in
-      //    its own doc). Any failure just skips it — the original is already
-      //    safe — so an upload is never blocked by background removal.
-      let hasCutout = false;
-      let cutoutBgColor = null;
-      let displayUrl = originalUrl;
-      if (state.removeBg) {
-        el.photoProgressLabel.textContent = 'Removing background…';
-        try {
-          const composited = await cutoutOntoColor(file, state.bgColor, (frac) => {
-            el.photoProgressFill.style.width = `${Math.min(85, 55 + Math.round(frac * 30))}%`;
-          });
-          const { dataUrl: cutoutUrl } = await compressImageToDataURL(composited);
-          const cref = cutoutDocRef(dayNum);
-          if (cref) await cref.set({ data: cutoutUrl, bgColor: state.bgColor, uploadedAt: nowISO });
-          hasCutout = true;
-          cutoutBgColor = state.bgColor;
-          displayUrl = cutoutUrl;
-        } catch (e) {
-          console.error('Background removal failed', e);
-          showToast('Couldn’t remove the background — saved the original.');
-        }
-      }
-      // Clear any stale cut-out from a previous upload of this day when we
-      // didn't make a fresh one, so it can't resurface mismatched later.
-      if (!hasCutout) {
-        const cref = cutoutDocRef(dayNum);
-        if (cref) await cref.delete().catch(() => {});
-      }
+      // A fresh original supersedes any cut-out from a previous photo this day.
+      const staleCutout = cutoutDocRef(dayNum);
+      if (staleCutout) await staleCutout.delete().catch(() => {});
 
       el.photoProgressFill.style.width = '100%';
       el.photoProgressLabel.textContent = 'Done';
-      photoDataCache.set(dayNum, displayUrl);
+      photoDataCache.set(dayNum, originalUrl);
       luminanceCache.delete(dayNum);
 
       if (!state.photos) state.photos = {};
-      state.photos[dayNum] = { uploadedAt: nowISO, hasCutout, cutoutBgColor };
+      // hasCutout starts false; the queue flips it to true once the cut-out is
+      // produced. Until then the original shows.
+      state.photos[dayNum] = { uploadedAt: nowISO, hasCutout: false, cutoutBgColor: null };
 
       // Lock in the viewport aspect ratio to the first photo uploaded.
       if (!state.photoAspectRatio && Number.isFinite(aspectRatio) && aspectRatio > 0) {
@@ -1092,7 +1191,10 @@
       renderPhotoSheet();
       renderTasks(); renderHero(); renderCalendar(); renderJourney();
       restartPhotoCarousel();
-      showToast(hasCutout ? `Day ${dayNum} photo saved — background removed.` : `Day ${dayNum} photo saved.`);
+      showToast(state.removeBg ? `Day ${dayNum} photo saved — removing background…` : `Day ${dayNum} photo saved.`);
+
+      // Kick off the cut-out in the background (no await) so saving felt instant.
+      if (state.removeBg) enqueueCutout(dayNum);
     } catch (e) {
       console.error('Photo upload failed', e);
       showToast(e?.message || 'Could not save that photo.');
@@ -3204,10 +3306,15 @@
       // between their cut-out and their original (removal is reversible).
       photoDataCache.clear();
       luminanceCache.clear();
-      // Warm the model up in the background so the first upload isn't a long wait.
-      if (state.removeBg) loadBgRemover().catch(() => {});
       restartPhotoCarousel();
-      showToast(state.removeBg ? 'Backgrounds removed in your timeline' : 'Original backgrounds restored');
+      if (state.removeBg) {
+        // Backfill any photos that don't have a cut-out yet (first + last first).
+        enqueueAllCutouts();
+        showToast(bgQueue.length ? 'Removing backgrounds — first and last photo first' : 'Background removal on');
+      } else {
+        clearBgQueue();
+        showToast('Original backgrounds restored');
+      }
     });
   }
 

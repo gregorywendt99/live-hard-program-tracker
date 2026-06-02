@@ -1529,6 +1529,27 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   gap: 8px;
 }
 
+/* Subtle indicator while cut-outs are being produced off the critical path. */
+.photos-bg-status {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.photos-bg-status::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  border-top-color: transparent;
+  animation: photos-bg-spin 0.7s linear infinite;
+}
+@keyframes photos-bg-spin { to { transform: rotate(360deg); } }
+
 .photos-download-btn {
   width: 34px;
   height: 34px;
