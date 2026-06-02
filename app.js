@@ -842,9 +842,83 @@
 
   /* ----- Background removal ------------------------------------------- */
 
-  // Subject cut-out runs entirely on-device via a segmentation model. Only the
-  // model *code* is fetched (from a CDN, then browser-cached); photos never
-  // leave the device. Two CDNs are tried so a single outage doesn't break it.
+  // Subject cut-out runs entirely on-device. Only the model *code/weights* are
+  // fetched (from a CDN, then browser-cached); photos never leave the device.
+  //
+  // Primary remover: RMBG-1.4 via Transformers.js, on WebGPU when available
+  // (~2s/photo) and WASM otherwise (~10s). Fallback: imgly's IS-Net, if
+  // Transformers.js/RMBG can't load. Last resort: keep the original photo.
+
+  // --- Primary: RMBG-1.4 (Transformers.js) ---
+  const TRANSFORMERS_CDNS = [
+    'https://esm.sh/@huggingface/transformers@3',
+    'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3/+esm',
+  ];
+  const RMBG_MODEL = 'briaai/RMBG-1.4';
+  let transformersLibP = null;
+  let rmbgSeg = null;        // the loaded pipeline
+  let rmbgDevice = null;     // 'webgpu' | 'wasm'
+  let rmbgReady = false;
+  let rmbgDownloadPct = 0;   // model weight download progress (0–100)
+
+  function loadTransformers() {
+    if (transformersLibP) return transformersLibP;
+    transformersLibP = (async () => {
+      let lib, lastErr;
+      for (const url of TRANSFORMERS_CDNS) {
+        try { lib = await import(url); break; } catch (e) { lastErr = e; }
+      }
+      if (!lib) throw lastErr || new Error('Transformers.js unavailable');
+      lib.env.allowLocalModels = false;
+      return lib;
+    })();
+    transformersLibP.catch(() => { transformersLibP = null; });
+    return transformersLibP;
+  }
+
+  async function makeRmbgPipeline(device) {
+    const lib = await loadTransformers();
+    return lib.pipeline('image-segmentation', RMBG_MODEL, {
+      device,
+      progress_callback: (p) => {
+        if (p && p.status === 'progress' && typeof p.progress === 'number') {
+          rmbgDownloadPct = Math.round(p.progress);
+          updateBgStatus();
+        }
+      },
+    });
+  }
+
+  async function getRmbgSegmenter() {
+    if (rmbgSeg) return rmbgSeg;
+    const device = (typeof navigator !== 'undefined' && navigator.gpu) ? 'webgpu' : 'wasm';
+    rmbgSeg = await makeRmbgPipeline(device);
+    rmbgDevice = device;
+    rmbgReady = true;
+    rmbgDownloadPct = 100;
+    updateBgStatus();
+    return rmbgSeg;
+  }
+
+  // Run RMBG and return the foreground matte (grayscale RawImage). If a WebGPU
+  // run throws at inference time (a known issue for some models), rebuild once
+  // on WASM and retry.
+  async function rmbgMask(imageInput) {
+    const seg = await getRmbgSegmenter();
+    try {
+      return (await seg(imageInput))[0].mask;
+    } catch (e) {
+      if (rmbgDevice === 'webgpu') {
+        console.warn('RMBG WebGPU run failed; falling back to WASM.', e);
+        rmbgSeg = await makeRmbgPipeline('wasm');
+        rmbgDevice = 'wasm';
+        return (await rmbgSeg(imageInput))[0].mask;
+      }
+      throw e;
+    }
+  }
+
+  // --- Fallback: imgly IS-Net ---
   const BG_REMOVAL_CDNS = [
     'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm',
     'https://esm.sh/@imgly/background-removal@1.7.0',
@@ -876,50 +950,135 @@
     });
   }
 
-  // Cut the subject out of `file` and paint it onto a solid `color`. Because the
-  // background ends up fully opaque, the result is a plain JPEG — no alpha — so
-  // it flows through the normal compress/store pipeline unchanged. Throws on any
-  // failure so the caller can fall back to the original photo.
-  // Run the segmentation model and return the subject as a size-bounded WebP
-  // with transparency preserved. The flat background COLOR is applied later, at
-  // display time — so the subject is only ever cut out once, and recoloring
-  // never re-runs the model. This is the heavy step.
-  async function segmentToCutoutBlob(file, onProgress) {
+  // Produce the transparent cut-out for `file` and return it as a size-bounded
+  // blob (lossless PNG when it fits, else high-quality WebP). The flat color is
+  // applied later at display time, so the subject is only ever cut out once and
+  // recoloring never re-runs the model. Tries RMBG-1.4, then imgly; throws if
+  // both fail so the caller can keep the original photo.
+  async function segmentToCutoutBlob(file) {
+    let canvas;
+    try {
+      canvas = await rmbgCutoutCanvas(file);
+    } catch (e) {
+      console.warn('RMBG cut-out failed; trying imgly fallback.', e);
+      canvas = await imglyCutoutCanvas(file);
+    }
+    return encodeCutout(canvas);
+  }
+
+  // Draw `img` onto a fresh canvas, downscaled so its long edge ≤ PHOTO_MAX_DIM.
+  function makeSizedCanvas(img) {
+    let w = img.naturalWidth || img.width;
+    let h = img.naturalHeight || img.height;
+    const longer = Math.max(w, h);
+    if (longer > PHOTO_MAX_DIM) {
+      const scale = PHOTO_MAX_DIM / longer;
+      w = Math.round(w * scale);
+      h = Math.round(h * scale);
+    }
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, w, h);
+    return { canvas, ctx, w, h };
+  }
+
+  // RMBG-1.4: run the matte, apply it as the original's alpha channel, clean it.
+  async function rmbgCutoutCanvas(file) {
+    const dataUrl = await blobToDataURL(file);
+    const [img, mask] = await Promise.all([decodeBlobToImage(file), rmbgMask(dataUrl)]);
+    const { canvas, ctx, w, h } = makeSizedCanvas(img);
+    const id = ctx.getImageData(0, 0, w, h);
+    let m = mask.resize(w, h);
+    if (m && typeof m.then === 'function') m = await m;
+    const md = m.data, mch = m.channels || 1;
+    for (let i = 0, p = 3; i < w * h; i++, p += 4) id.data[p] = md[i * mch];
+    refineAlpha(id, w, h);
+    ctx.putImageData(id, 0, 0);
+    return canvas;
+  }
+
+  // imgly fallback: returns a transparent PNG; decode, size, clean.
+  async function imglyCutoutCanvas(file) {
     const mod = await loadBgRemover();
     const removeBackground = mod.removeBackground || mod.default?.removeBackground;
     if (typeof removeBackground !== 'function') throw new Error('Remover API missing');
-    const cutPng = await removeBackground(file, {
-      output: { format: 'image/png' }, // PNG out of the model keeps alpha
-      progress: (_key, current, total) => {
-        if (onProgress && total) onProgress(Math.min(1, current / total));
-      },
-    });
-    return compressCutout(cutPng);
+    const cutPng = await removeBackground(file, { output: { format: 'image/png' } });
+    const img = await decodeBlobToImage(cutPng);
+    const { canvas, ctx, w, h } = makeSizedCanvas(img);
+    const id = ctx.getImageData(0, 0, w, h);
+    refineAlpha(id, w, h);
+    ctx.putImageData(id, 0, 0);
+    return canvas;
   }
 
-  // Re-encode an alpha cut-out to a size-bounded WebP (transparency kept) so it
-  // fits Firestore's 1MB per-doc limit the way the JPEG originals do.
-  async function compressCutout(blob) {
-    const img = await decodeBlobToImage(blob);
-    let width = img.naturalWidth || img.width;
-    let height = img.naturalHeight || img.height;
-    const longer = Math.max(width, height);
-    if (longer > PHOTO_MAX_DIM) {
-      const scale = PHOTO_MAX_DIM / longer;
-      width = Math.round(width * scale);
-      height = Math.round(height * scale);
+  // Tier A — clean the matte's alpha channel in place:
+  //   1. Island removal: drop foreground blobs far smaller than the main
+  //      subject (kills stray background chunks, e.g. a piece of couch).
+  //   2. A 1px edge erode: shave the thin background "halo" clinging to edges.
+  function refineAlpha(imageData, w, h) {
+    const data = imageData.data;
+    const n = w * h;
+    const ALPHA_T = 128;
+    const fg = new Uint8Array(n);
+    for (let i = 0; i < n; i++) fg[i] = data[i * 4 + 3] > ALPHA_T ? 1 : 0;
+
+    // Connected components (4-connected), iterative flood fill.
+    const label = new Int32Array(n).fill(-1);
+    const stack = new Int32Array(n);
+    const sizes = [];
+    let cur = 0;
+    for (let s = 0; s < n; s++) {
+      if (!fg[s] || label[s] !== -1) continue;
+      let sp = 0; stack[sp++] = s; label[s] = cur; let size = 0;
+      while (sp > 0) {
+        const idx = stack[--sp]; size++;
+        const x = idx % w, y = (idx / w) | 0;
+        if (x > 0)     { const k = idx - 1; if (fg[k] && label[k] === -1) { label[k] = cur; stack[sp++] = k; } }
+        if (x < w - 1) { const k = idx + 1; if (fg[k] && label[k] === -1) { label[k] = cur; stack[sp++] = k; } }
+        if (y > 0)     { const k = idx - w; if (fg[k] && label[k] === -1) { label[k] = cur; stack[sp++] = k; } }
+        if (y < h - 1) { const k = idx + w; if (fg[k] && label[k] === -1) { label[k] = cur; stack[sp++] = k; } }
+      }
+      sizes[cur++] = size;
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
-    for (const q of [0.85, 0.75, 0.6, 0.5]) {
+    if (cur > 0) {
+      let maxSize = 0;
+      for (let l = 0; l < cur; l++) if (sizes[l] > maxSize) maxSize = sizes[l];
+      const keepMin = Math.max(64, maxSize * 0.02); // keep blobs ≥2% of the largest
+      for (let i = 0; i < n; i++) {
+        if (fg[i] && sizes[label[i]] < keepMin) data[i * 4 + 3] = 0;
+      }
+    }
+    erodeAlpha(data, w, h);
+  }
+
+  // Shave one pixel off the foreground edge (removes the background halo).
+  function erodeAlpha(data, w, h) {
+    const n = w * h;
+    const a = new Uint8Array(n);
+    for (let i = 0; i < n; i++) a[i] = data[i * 4 + 3];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        if (a[i] === 0) continue;
+        const edge =
+          x === 0 || y === 0 || x === w - 1 || y === h - 1 ||
+          a[i - 1] < 16 || a[i + 1] < 16 || a[i - w] < 16 || a[i + w] < 16;
+        if (edge) data[i * 4 + 3] = 0;
+      }
+    }
+  }
+
+  // Tier B — encode the transparent cut-out at full fidelity: lossless PNG when
+  // it fits Firestore's 1MB per-doc cap, otherwise a high-quality WebP ladder.
+  async function encodeCutout(canvas) {
+    const png = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    if (png && png.size <= PHOTO_MAX_BYTES) return png;
+    for (const q of [0.92, 0.85, 0.75, 0.6]) {
       const out = await new Promise((r) => canvas.toBlob(r, 'image/webp', q));
       if (out && out.size <= PHOTO_MAX_BYTES) return out;
     }
-    // Last resort: lowest-quality WebP, or PNG if the browser can't encode WebP.
-    const last = await new Promise((r) => canvas.toBlob(r, 'image/webp', 0.4));
-    return last || await new Promise((r) => canvas.toBlob(r, 'image/png'));
+    return (await new Promise((r) => canvas.toBlob(r, 'image/webp', 0.5))) || png;
   }
 
   function blobToDataURL(blob) {
@@ -1030,15 +1189,21 @@
     if (!state.removeBg || !firestore || !currentUser) return;
     bgWorkerRunning = true;
     updateBgStatus();
-    // Load the model once up front; if it can't load, don't hammer it per photo.
+    // Warm a remover once up front (RMBG preferred, imgly fallback); if neither
+    // loads, don't hammer per photo.
     try {
-      await loadBgRemover();
+      await getRmbgSegmenter();
     } catch (e) {
-      console.error('Background remover unavailable', e);
-      showToast('Background remover unavailable right now.');
-      bgWorkerRunning = false;
-      clearBgQueue();
-      return;
+      console.warn('RMBG unavailable; trying imgly fallback.', e);
+      try {
+        await loadBgRemover();
+      } catch (e2) {
+        console.error('No background remover available', e2);
+        showToast('Background remover unavailable right now.');
+        bgWorkerRunning = false;
+        clearBgQueue();
+        return;
+      }
     }
     try {
       while (bgQueue.length && state.removeBg) {
@@ -1062,11 +1227,16 @@
     const node = el.photosBgStatus;
     if (!node) return;
     const remaining = bgQueue.length + (bgWorkerRunning ? 1 : 0);
-    if (state.removeBg && bgWorkerRunning && remaining > 0) {
-      node.hidden = false;
-      node.textContent = remaining > 1 ? `Removing backgrounds… ${remaining} left` : 'Removing background…';
-    } else {
+    if (!(state.removeBg && bgWorkerRunning && remaining > 0)) {
       node.hidden = true;
+      return;
+    }
+    node.hidden = false;
+    if (!rmbgReady && rmbgDownloadPct > 0 && rmbgDownloadPct < 100) {
+      // First-ever use: the model weights are still downloading.
+      node.textContent = `Downloading remover… ${rmbgDownloadPct}%`;
+    } else {
+      node.textContent = remaining > 1 ? `Removing backgrounds… ${remaining} left` : 'Removing background…';
     }
   }
 
