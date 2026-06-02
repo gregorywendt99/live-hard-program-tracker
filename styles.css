@@ -1499,6 +1499,68 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 
 .photo-sheet-actions { display: block; }
 
+/* Cut-out touch-up editor */
+.photo-edit-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.photo-edit-canvas {
+  display: block;
+  width: 100%;
+  max-height: 56vh;
+  object-fit: contain;
+  margin: 0 auto;
+  border-radius: var(--r-md);
+  background:
+    linear-gradient(45deg, var(--bg-tertiary) 25%, transparent 25%) 0 0/20px 20px,
+    linear-gradient(-45deg, var(--bg-tertiary) 25%, transparent 25%) 0 10px/20px 20px,
+    linear-gradient(45deg, transparent 75%, var(--bg-tertiary) 75%) 10px -10px/20px 20px,
+    linear-gradient(-45deg, transparent 75%, var(--bg-tertiary) 75%) -10px 0/20px 20px,
+    var(--bg-secondary);
+  cursor: crosshair;
+  touch-action: none;
+}
+.photo-edit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.photo-edit-tools { display: flex; gap: 8px; }
+.photo-edit-tool {
+  border: 1px solid var(--separator-strong);
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+.photo-edit-tool.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.photo-edit-brush {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 140px;
+}
+.photo-edit-brush-label { font-size: 13px; color: var(--text-tertiary); }
+.photo-edit-brush input[type="range"] { flex: 1; accent-color: var(--accent); }
+.photo-edit-actions {
+  display: flex;
+  gap: 10px;
+}
+.photo-edit-actions .btn { flex: 1; }
+
 .photo-progress { margin: 12px 0 16px; }
 .photo-progress-bar {
   height: 6px;

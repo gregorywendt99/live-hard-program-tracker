@@ -346,6 +346,13 @@
     photoPrevBtn: $('#photoPrevBtn'),
     photoNextBtn: $('#photoNextBtn'),
     photoSheetActions: $('#photoSheetActions'),
+    photoEditBtn: $('#photoEditBtn'),
+    photoEditStage: $('#photoEditStage'),
+    photoEditActions: $('#photoEditActions'),
+    photoEditCanvas: $('#photoEditCanvas'),
+    photoEditErase: $('#photoEditErase'),
+    photoEditRestore: $('#photoEditRestore'),
+    photoEditBrush: $('#photoEditBrush'),
     photoAlignBtn: $('#photoAlignBtn'),
     photoAlignStage: $('#photoAlignStage'),
     photoAlignActions: $('#photoAlignActions'),
@@ -1124,6 +1131,8 @@
   function needsCutout(day) {
     const p = state.photos?.[day];
     if (!p) return false;
+    // Never overwrite a hand-edited cut-out.
+    if (p.cutoutEdited) return false;
     // No cut-out yet, or a legacy baked one (no stored transparency).
     if (!p.hasCutout || !p.cutoutTransparent) return true;
     // Re-run cut-outs made by an older method (e.g. the previous imgly version)
@@ -1515,6 +1524,8 @@
     el.photoAlignBtn.hidden = !has;
     el.photoAlignBtn.textContent = has?.alignment ? 'Re-align this photo' : 'Align this photo';
     el.photoPickBtn.textContent = has ? 'Replace photo' : 'Choose photo';
+    // Touch-up only makes sense once a cut-out exists for the day.
+    if (el.photoEditBtn) el.photoEditBtn.hidden = !has?.hasCutout;
 
     if (has) {
       const url = await fetchPhotoURL(dayNum);
@@ -1536,6 +1547,191 @@
           <span>No photo for this day yet</span>
         </div>`;
     }
+  }
+
+  /* ----- Cut-out touch-up editor --------------------------------------- */
+
+  // Manual brush to fix what the model misses: erase leftover bits, or restore
+  // over-trimmed areas. Works on the cut-out's ALPHA mask while always sourcing
+  // RGB from the kept original, so Restore reveals real pixels (not black).
+  // Saved with edited:true so auto-reprocessing never overwrites the edits.
+  let editState = null;
+  // { day, w, h, work, wctx, baseImg, initialAlpha, tool, brush, drawing, last, undo:[] }
+
+  async function fetchCutoutData(day) {
+    let c = cutoutDataCache.get(day);
+    if (c === undefined) {
+      c = null;
+      try { const s = await cutoutDocRef(day)?.get(); if (s && s.exists) c = s.data() || null; } catch (e) { console.error(e); }
+      if (c && c.data) cutoutDataCache.set(day, c);
+    }
+    return c;
+  }
+
+  async function openEditView() {
+    const day = photoSheetDay;
+    if (!day || !state.photos?.[day]?.hasCutout) return;
+    const [origUrl, cutout] = await Promise.all([fetchOriginalDataURL(day), fetchCutoutData(day)]);
+    if (!origUrl || !cutout || !cutout.data) { showToast('Couldn’t open the editor.'); return; }
+    let origImg, cutImg;
+    try { [origImg, cutImg] = await Promise.all([loadImage(origUrl), loadImage(cutout.data)]); }
+    catch { showToast('Couldn’t open the editor.'); return; }
+
+    const w = cutImg.naturalWidth || cutImg.width;
+    const h = cutImg.naturalHeight || cutImg.height;
+    const work = document.createElement('canvas');
+    work.width = w; work.height = h;
+    const wctx = work.getContext('2d', { willReadFrequently: true });
+    wctx.drawImage(origImg, 0, 0, w, h);
+    const baseImg = wctx.getImageData(0, 0, w, h); // original RGB
+    // Seed alpha from the current cut-out.
+    const tmp = document.createElement('canvas'); tmp.width = w; tmp.height = h;
+    const tctx = tmp.getContext('2d', { willReadFrequently: true });
+    tctx.drawImage(cutImg, 0, 0, w, h);
+    const ca = tctx.getImageData(0, 0, w, h).data;
+    for (let i = 3; i < baseImg.data.length; i += 4) baseImg.data[i] = ca[i];
+
+    editState = {
+      day, w, h, work, wctx, baseImg,
+      initialAlpha: baseImg.data.slice(0), // for Reset (whole RGBA copy is fine)
+      tool: 'erase',
+      brush: Math.max(10, Math.round(Math.max(w, h) * 0.04)),
+      drawing: false, last: null, undo: [],
+    };
+
+    const cv = el.photoEditCanvas;
+    cv.width = w; cv.height = h;
+    el.photoPreview.style.display = 'none';
+    el.photoSheetActions.style.display = 'none';
+    el.photoEditStage.hidden = false;
+    el.photoEditActions.hidden = false;
+    if (el.photoEditBrush) el.photoEditBrush.value = String(editState.brush);
+    updateEditTools();
+    renderEdit();
+  }
+
+  function closeEditView() {
+    editState = null;
+    el.photoEditStage.hidden = true;
+    el.photoEditActions.hidden = true;
+    el.photoPreview.style.display = '';
+    el.photoSheetActions.style.display = '';
+  }
+
+  function updateEditTools() {
+    if (!editState) return;
+    if (el.photoEditErase) el.photoEditErase.classList.toggle('active', editState.tool === 'erase');
+    if (el.photoEditRestore) el.photoEditRestore.classList.toggle('active', editState.tool === 'restore');
+  }
+
+  function renderEdit() {
+    if (!editState) return;
+    const { work, wctx, baseImg } = editState;
+    wctx.putImageData(baseImg, 0, 0);
+    const cv = el.photoEditCanvas;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.fillStyle = state.bgColor || '#ededf0';
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.drawImage(work, 0, 0, cv.width, cv.height);
+  }
+
+  function editPointerPos(e) {
+    const cv = el.photoEditCanvas;
+    const rect = cv.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (cv.width / rect.width),
+      y: (e.clientY - rect.top) * (cv.height / rect.height),
+    };
+  }
+
+  function editPaintAt(x, y) {
+    const { baseImg, w, h, brush, tool } = editState;
+    const alpha = tool === 'erase' ? 0 : 255;
+    const r = brush, r2 = r * r;
+    const data = baseImg.data;
+    const x0 = Math.max(0, Math.floor(x - r)), x1 = Math.min(w - 1, Math.ceil(x + r));
+    const y0 = Math.max(0, Math.floor(y - r)), y1 = Math.min(h - 1, Math.ceil(y + r));
+    for (let py = y0; py <= y1; py++) {
+      for (let px = x0; px <= x1; px++) {
+        const dx = px - x, dy = py - y;
+        if (dx * dx + dy * dy <= r2) data[(py * w + px) * 4 + 3] = alpha;
+      }
+    }
+  }
+
+  // Paint a stroke from `a` to `b` so fast drags don't leave gaps.
+  function editStroke(a, b) {
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const step = Math.max(1, editState.brush / 3);
+    const n = Math.max(1, Math.ceil(dist / step));
+    for (let i = 0; i <= n; i++) editPaintAt(a.x + (b.x - a.x) * (i / n), a.y + (b.y - a.y) * (i / n));
+  }
+
+  function editPointerDown(e) {
+    if (!editState) return;
+    e.preventDefault();
+    try { el.photoEditCanvas.setPointerCapture(e.pointerId); } catch {}
+    // Snapshot alpha for undo (cap history at 20 steps).
+    editState.undo.push(editState.baseImg.data.slice(0));
+    if (editState.undo.length > 20) editState.undo.shift();
+    editState.drawing = true;
+    const p = editPointerPos(e);
+    editState.last = p;
+    editPaintAt(p.x, p.y);
+    renderEdit();
+  }
+
+  function editPointerMove(e) {
+    if (!editState || !editState.drawing) return;
+    const p = editPointerPos(e);
+    editStroke(editState.last, p);
+    editState.last = p;
+    renderEdit();
+  }
+
+  function editPointerUp() {
+    if (editState) editState.drawing = false;
+  }
+
+  function editUndo() {
+    if (!editState || !editState.undo.length) return;
+    editState.baseImg.data.set(editState.undo.pop());
+    renderEdit();
+  }
+
+  function editReset() {
+    if (!editState) return;
+    editState.undo.push(editState.baseImg.data.slice(0));
+    editState.baseImg.data.set(editState.initialAlpha);
+    renderEdit();
+  }
+
+  async function saveEdit() {
+    if (!editState) return;
+    const { day, work, wctx, baseImg } = editState;
+    wctx.putImageData(baseImg, 0, 0);
+    let blob;
+    try { blob = await encodeCutout(work); }
+    catch (e) { console.error('Touch-up encode failed', e); showToast('Couldn’t save touch-ups.'); return; }
+    const dataUrl = await blobToDataURL(blob);
+    try {
+      const cref = cutoutDocRef(day);
+      if (cref) await cref.set({ data: dataUrl, transparent: true, model: 'manual', edited: true, uploadedAt: new Date().toISOString() });
+    } catch (e) { console.error('Touch-up save failed', e); showToast('Couldn’t save touch-ups.'); return; }
+    if (!state.photos[day]) state.photos[day] = {};
+    state.photos[day].hasCutout = true;
+    state.photos[day].cutoutTransparent = true;
+    state.photos[day].cutoutModel = 'manual';
+    state.photos[day].cutoutEdited = true;
+    saveState();
+    cutoutDataCache.set(day, { data: dataUrl, transparent: true });
+    photoDataCache.delete(day);
+    luminanceCache.delete(day);
+    closeEditView();
+    renderPhotoSheet();
+    restartPhotoCarousel();
+    showToast('Touch-ups saved.');
   }
 
   /* ----- Photo alignment ------------------------------------------------ */
@@ -3434,7 +3630,8 @@
       case 'reset-water-today': resetWaterToday(); break;
       case 'open-photo': openPhotoSheet(journeyDayForViewedDay()); break;
       case 'close-photo':
-        if (alignState) closeAlignView();
+        if (editState) closeEditView();
+        else if (alignState) closeAlignView();
         else if (!photoUploadInProgress) closePhotoSheet();
         break;
       case 'pick-photo': el.photoInput.click(); break;
@@ -3442,19 +3639,27 @@
         if (photoSheetDay) removePhotoForDay(photoSheetDay);
         break;
       case 'photo-prev-day':
-        if (photoSheetDay && photoSheetDay > 1 && !photoUploadInProgress) {
+        if (photoSheetDay && photoSheetDay > 1 && !photoUploadInProgress && !editState) {
           photoSheetDay--;
           renderPhotoSheet();
         }
         break;
       case 'photo-next-day': {
         const todayDay = journeyDayForToday() || 1;
-        if (photoSheetDay && photoSheetDay < todayDay && !photoUploadInProgress) {
+        if (photoSheetDay && photoSheetDay < todayDay && !photoUploadInProgress && !editState) {
           photoSheetDay++;
           renderPhotoSheet();
         }
         break;
       }
+      case 'open-touchup': openEditView(); break;
+      case 'touchup-cancel': closeEditView(); break;
+      case 'touchup-save': saveEdit(); break;
+      case 'touchup-undo': editUndo(); break;
+      case 'touchup-reset': editReset(); break;
+      case 'touchup-tool':
+        if (editState) { editState.tool = t.dataset.tool === 'restore' ? 'restore' : 'erase'; updateEditTools(); }
+        break;
       case 'open-align': openAlignView(); break;
       case 'photo-align-cancel': closeAlignView(); break;
       case 'photo-align-save': savePhotoAlignment(); break;
@@ -3540,6 +3745,20 @@
   el.photoAlignZoomSlider.addEventListener('input', onAlignSlider);
   el.photoAlignCalibrate.addEventListener('change', onAlignCalibrateToggle);
   setupAlignGestures();
+
+  // Cut-out touch-up: brush size + drawing on the edit canvas
+  if (el.photoEditBrush) {
+    el.photoEditBrush.addEventListener('input', (e) => {
+      if (editState) editState.brush = Number(e.target.value) || editState.brush;
+    });
+  }
+  if (el.photoEditCanvas) {
+    el.photoEditCanvas.style.touchAction = 'none';
+    el.photoEditCanvas.addEventListener('pointerdown', editPointerDown);
+    el.photoEditCanvas.addEventListener('pointermove', editPointerMove);
+    el.photoEditCanvas.addEventListener('pointerup', editPointerUp);
+    el.photoEditCanvas.addEventListener('pointercancel', editPointerUp);
+  }
 
   // Start date
   el.startDateInput.addEventListener('change', (e) => changeStartDate(e.target.value));
