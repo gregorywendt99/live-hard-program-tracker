@@ -551,21 +551,17 @@
               <div class="photo-align-magnifier-crosshair"></div>
             </div>
             <div class="photo-edit-toolbar">
-              <label class="photo-edit-brush">
-                <span class="photo-edit-brush-label" id="photoEditSliderLabel">Smoothing</span>
-                <input type="range" id="photoEditBrush" min="0" max="100" step="1" value="85" />
-              </label>
               <div class="photo-edit-tools">
                 <button class="photo-edit-tool" type="button" data-action="touchup-undo">Undo</button>
                 <button class="photo-edit-tool" type="button" data-action="touchup-reset">Reset</button>
               </div>
             </div>
-            <p class="settings-hint" style="text-align:center;margin-bottom:0;">Trace around the part you want to remove — release to erase inside the loop. Higher smoothing = a smoother line.</p>
+            <p class="settings-hint" style="text-align:center;margin-bottom:0;">Trace around the part you want gone — release to erase inside the loop. It saves automatically; tap Done when finished.</p>
           </div>
 
           <div class="photo-edit-actions" id="photoEditActions" hidden>
-            <button class="btn btn-secondary" data-action="touchup-cancel">Cancel</button>
-            <button class="btn btn-primary" data-action="touchup-save">Save touch-ups</button>
+            <span class="photo-edit-saved" id="photoEditSaved" hidden>Saved ✓</span>
+            <button class="btn btn-primary" id="photoEditDone" data-action="touchup-finish">Done</button>
           </div>
           <div class="photo-progress" id="photoProgress" hidden>
             <div class="photo-progress-bar"><div class="photo-progress-fill" id="photoProgressFill"></div></div>

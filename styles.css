@@ -1522,7 +1522,7 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 12px;
 }
 .photo-edit-tools { display: flex; gap: 8px; }
@@ -1555,8 +1555,14 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 .photo-edit-actions {
   display: flex;
   gap: 10px;
+  align-items: center;
 }
-.photo-edit-actions .btn { flex: 1; }
+.photo-edit-actions .btn { margin-left: auto; min-width: 140px; }
+.photo-edit-saved {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
 
 .photo-edit-magnifier-canvas {
   display: block;

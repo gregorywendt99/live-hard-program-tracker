@@ -350,8 +350,7 @@
     photoEditStage: $('#photoEditStage'),
     photoEditActions: $('#photoEditActions'),
     photoEditCanvas: $('#photoEditCanvas'),
-    photoEditBrush: $('#photoEditBrush'),
-    photoEditSliderLabel: $('#photoEditSliderLabel'),
+    photoEditSaved: $('#photoEditSaved'),
     photoEditMagnifier: $('#photoEditMagnifier'),
     photoEditMagnifierCanvas: $('#photoEditMagnifierCanvas'),
     photoAlignBtn: $('#photoAlignBtn'),
@@ -1557,6 +1556,7 @@
   // RGB from the kept original, so Restore reveals real pixels (not black).
   // Saved with edited:true so auto-reprocessing never overwrites the edits.
   let editState = null;
+  let editSaveTimer = null;
   // { day, w, h, work, wctx, baseImg, initialAlpha, tool, brush, drawing, last, undo:[] }
 
   async function fetchCutoutData(day) {
@@ -1595,35 +1595,33 @@
     editState = {
       day, w, h, work, wctx, baseImg,
       initialAlpha: baseImg.data.slice(0), // for Reset (whole RGBA copy is fine)
-      smoothing: 85, // 0–100; higher = smoother line
+      smoothing: 50, // fixed at the halfway point; not adjustable
       lassoPts: null, lassoLastRaw: null, lassoSmooth: null,
-      drawing: false, undo: [],
+      drawing: false, dirty: false, undo: [],
     };
 
     const cv = el.photoEditCanvas;
     cv.width = w; cv.height = h;
+    if (el.photoEditSaved) el.photoEditSaved.hidden = true;
     el.photoPreview.style.display = 'none';
     el.photoSheetActions.style.display = 'none';
     el.photoEditStage.hidden = false;
     el.photoEditActions.hidden = false;
-    updateEditTools();
     renderEdit();
   }
 
+  // Edits auto-save as you go, so closing just flushes any pending save.
   function closeEditView() {
+    clearTimeout(editSaveTimer);
+    if (editState && editState.dirty) persistEdit();
     editState = null;
     hideEditMagnifier();
     el.photoEditStage.hidden = true;
     el.photoEditActions.hidden = true;
     el.photoPreview.style.display = '';
     el.photoSheetActions.style.display = '';
-  }
-
-  function updateEditTools() {
-    if (!editState || !el.photoEditBrush) return;
-    if (el.photoEditSliderLabel) el.photoEditSliderLabel.textContent = 'Smoothing';
-    const s = el.photoEditBrush;
-    s.min = '0'; s.max = '100'; s.value = String(editState.smoothing);
+    renderPhotoSheet();
+    restartPhotoCarousel();
   }
 
   // Trace a smooth curve through the points (quadratic through midpoints) so
@@ -1797,6 +1795,7 @@
       if (editState.lassoPts && editState.lassoPts.length >= 3) {
         pushEditUndo();
         lassoApply();
+        scheduleEditSave();
       }
       editState.lassoPts = null;
       editState.lassoLastRaw = null;
@@ -1810,6 +1809,7 @@
     if (!editState || !editState.undo.length) return;
     editState.baseImg.data.set(editState.undo.pop());
     renderEdit();
+    scheduleEditSave();
   }
 
   function editReset() {
@@ -1817,20 +1817,36 @@
     editState.undo.push(editState.baseImg.data.slice(0));
     editState.baseImg.data.set(editState.initialAlpha);
     renderEdit();
+    scheduleEditSave();
   }
 
-  async function saveEdit() {
+  // Auto-save: mark dirty and persist a short moment after the last edit (so a
+  // burst of lassos coalesces into one write). Flushed immediately on close.
+  function scheduleEditSave() {
     if (!editState) return;
-    const { day, work, wctx, baseImg } = editState;
-    wctx.putImageData(baseImg, 0, 0);
+    editState.dirty = true;
+    if (el.photoEditSaved) { el.photoEditSaved.hidden = false; el.photoEditSaved.textContent = 'Saving…'; }
+    clearTimeout(editSaveTimer);
+    editSaveTimer = setTimeout(() => { persistEdit(); }, 500);
+  }
+
+  // Persist the current cut-out. Captures what it needs up front so it finishes
+  // even if the editor closes mid-write. No UI close (that's the Done button).
+  async function persistEdit() {
+    if (!editState || !editState.dirty) return;
+    editState.dirty = false;
+    clearTimeout(editSaveTimer);
+    const day = editState.day;
+    const work = editState.work;
+    editState.wctx.putImageData(editState.baseImg, 0, 0);
     let blob;
     try { blob = await encodeCutout(work); }
-    catch (e) { console.error('Touch-up encode failed', e); showToast('Couldn’t save touch-ups.'); return; }
+    catch (e) { console.error('Touch-up encode failed', e); if (editState) editState.dirty = true; return; }
     const dataUrl = await blobToDataURL(blob);
     try {
       const cref = cutoutDocRef(day);
       if (cref) await cref.set({ data: dataUrl, transparent: true, model: 'manual', edited: true, uploadedAt: new Date().toISOString() });
-    } catch (e) { console.error('Touch-up save failed', e); showToast('Couldn’t save touch-ups.'); return; }
+    } catch (e) { console.error('Touch-up save failed', e); if (editState) editState.dirty = true; return; }
     if (!state.photos[day]) state.photos[day] = {};
     state.photos[day].hasCutout = true;
     state.photos[day].cutoutTransparent = true;
@@ -1840,10 +1856,7 @@
     cutoutDataCache.set(day, { data: dataUrl, transparent: true });
     photoDataCache.delete(day);
     luminanceCache.delete(day);
-    closeEditView();
-    renderPhotoSheet();
-    restartPhotoCarousel();
-    showToast('Touch-ups saved.');
+    if (el.photoEditSaved) { el.photoEditSaved.hidden = false; el.photoEditSaved.textContent = 'Saved ✓'; }
   }
 
   /* ----- Photo alignment ------------------------------------------------ */
@@ -3765,8 +3778,7 @@
         break;
       }
       case 'open-touchup': openEditView(); break;
-      case 'touchup-cancel': closeEditView(); break;
-      case 'touchup-save': saveEdit(); break;
+      case 'touchup-finish': closeEditView(); break;
       case 'touchup-undo': editUndo(); break;
       case 'touchup-reset': editReset(); break;
       case 'open-align': openAlignView(); break;
@@ -3856,13 +3868,6 @@
   setupAlignGestures();
 
   // Cut-out touch-up: brush size + drawing on the edit canvas
-  if (el.photoEditBrush) {
-    el.photoEditBrush.addEventListener('input', (e) => {
-      if (!editState) return;
-      const v = Number(e.target.value);
-      if (Number.isFinite(v)) editState.smoothing = v;
-    });
-  }
   if (el.photoEditCanvas) {
     el.photoEditCanvas.style.touchAction = 'none';
     el.photoEditCanvas.addEventListener('pointerdown', editPointerDown);
