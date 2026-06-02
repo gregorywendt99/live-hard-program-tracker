@@ -2684,6 +2684,10 @@
     const compareDwellMs = 2000;
     const compareFadeMs = 280;
 
+    // In pure Sequence mode the playthrough loops; hold on the first photo for
+    // a beat each pass so it's clear where the loop restarts / begins.
+    const SEQ_LOOP_HOLD_MS = 2000;
+
     while (!cancelled) {
       // Phase 1: "Then vs Now" — skipped in pure sequence mode
       if (userCarouselMode !== 'sequence') {
@@ -2704,11 +2708,13 @@
         setFade(seqFadeMs);
         setCarouselMode('Sequence');
         const seqOpts = { lightRail: true };
+        // Only pause on the first frame when Sequence is the looping mode.
+        const firstHold = userCarouselMode === 'sequence' ? SEQ_LOOP_HOLD_MS : seqPerPhoto;
         for (let i = 0; i < days.length; i++) {
           if (cancelled) break;
           await showPhotoDay(days[i], seqOpts);
           if (cancelled) break;
-          await wait(seqPerPhoto);
+          await wait(i === 0 ? firstHold : seqPerPhoto);
         }
       }
     }
