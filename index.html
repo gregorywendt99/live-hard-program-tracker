@@ -382,6 +382,17 @@
               </span>
               <input type="checkbox" id="matchExposureToggle" class="settings-switch" />
             </label>
+            <label class="settings-toggle-row">
+              <span class="settings-toggle-text">
+                <span class="settings-label">Remove background</span>
+                <span class="settings-hint">Cut you out of each new progress photo and place you on a solid color, so a changing backdrop doesn't distract from your transformation. Runs on your device and applies to photos you upload from now on; the first use downloads the remover once.</span>
+              </span>
+              <input type="checkbox" id="removeBgToggle" class="settings-switch" />
+            </label>
+            <div class="settings-row" id="bgColorRow" hidden>
+              <label class="settings-label" for="bgColorInput">Background color</label>
+              <input type="color" id="bgColorInput" class="color-input" value="#ededf0" aria-label="Background color" />
+            </div>
           </div>
 
           <div class="settings-group">

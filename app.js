@@ -113,6 +113,8 @@
     photoAspectRatio: null, // width / height of the first uploaded photo
     matchExposure: false, // normalize each photo's brightness to the reference
     alignmentReferenceDay: null, // journey day whose photo set the alignment reference
+    removeBg: false, // cut the subject out of new photos and place on a flat color
+    bgColor: '#ededf0', // the flat color a cut-out subject is composited onto
   });
 
   let state = defaultState();
@@ -303,6 +305,9 @@
     toast: $('#toast'),
     startDateInput: $('#startDateInput'),
     matchExposureToggle: $('#matchExposureToggle'),
+    removeBgToggle: $('#removeBgToggle'),
+    bgColorRow: $('#bgColorRow'),
+    bgColorInput: $('#bgColorInput'),
     waitProgressFill: $('#waitProgressFill'),
     waitDaysDone: $('#waitDaysDone'),
     waitDaysLeft: $('#waitDaysLeft'),
@@ -829,6 +834,72 @@
     });
   }
 
+  /* ----- Background removal ------------------------------------------- */
+
+  // Subject cut-out runs entirely on-device via a segmentation model. Only the
+  // model *code* is fetched (from a CDN, then browser-cached); photos never
+  // leave the device. Two CDNs are tried so a single outage doesn't break it.
+  const BG_REMOVAL_CDNS = [
+    'https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm',
+    'https://esm.sh/@imgly/background-removal@1.7.0',
+  ];
+  let bgRemovalModuleP = null;
+
+  function loadBgRemover() {
+    if (bgRemovalModuleP) return bgRemovalModuleP;
+    bgRemovalModuleP = (async () => {
+      let lastErr;
+      for (const url of BG_REMOVAL_CDNS) {
+        try { return await import(url); }
+        catch (e) { lastErr = e; }
+      }
+      throw lastErr || new Error('Background remover unavailable');
+    })();
+    // Don't cache a rejected load — let the next upload retry from scratch.
+    bgRemovalModuleP.catch(() => { bgRemovalModuleP = null; });
+    return bgRemovalModuleP;
+  }
+
+  function decodeBlobToImage(blob) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Cut-out decode failed')); };
+      img.src = url;
+    });
+  }
+
+  // Cut the subject out of `file` and paint it onto a solid `color`. Because the
+  // background ends up fully opaque, the result is a plain JPEG — no alpha — so
+  // it flows through the normal compress/store pipeline unchanged. Throws on any
+  // failure so the caller can fall back to the original photo.
+  async function cutoutOntoColor(file, color, onProgress) {
+    const mod = await loadBgRemover();
+    const removeBackground = mod.removeBackground || mod.default?.removeBackground;
+    if (typeof removeBackground !== 'function') throw new Error('Remover API missing');
+
+    const cutBlob = await removeBackground(file, {
+      output: { format: 'image/png' }, // keep alpha for the composite step
+      progress: (_key, current, total) => {
+        if (onProgress && total) onProgress(Math.min(1, current / total));
+      },
+    });
+
+    const cutImg = await decodeBlobToImage(cutBlob);
+    const canvas = document.createElement('canvas');
+    canvas.width = cutImg.naturalWidth || cutImg.width;
+    canvas.height = cutImg.naturalHeight || cutImg.height;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = color || '#ededf0';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(cutImg, 0, 0);
+
+    const outBlob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.92));
+    if (!outBlob) throw new Error('Compositing failed');
+    return outBlob;
+  }
+
   function photoDocRef(dayNum) {
     if (!firestore || !currentUser) return null;
     return firestore.collection('users').doc(currentUser.uid).collection('photos').doc(String(dayNum));
@@ -935,7 +1006,26 @@
     el.photoProgressLabel.textContent = 'Compressing…';
 
     try {
-      const { dataUrl, aspectRatio } = await compressImageToDataURL(file);
+      // Optional: cut the subject out and place it on a flat color before
+      // compressing. Any failure (model can't load, etc.) falls back to the
+      // original photo so an upload never gets blocked by this.
+      let sourceFile = file;
+      if (state.removeBg) {
+        el.photoProgressFill.style.width = '25%';
+        el.photoProgressLabel.textContent = 'Removing background…';
+        try {
+          sourceFile = await cutoutOntoColor(file, state.bgColor, (frac) => {
+            el.photoProgressFill.style.width = `${Math.min(60, 25 + Math.round(frac * 35))}%`;
+          });
+          el.photoProgressLabel.textContent = 'Compressing…';
+        } catch (e) {
+          console.error('Background removal failed', e);
+          showToast('Couldn’t remove the background — saved the original.');
+          sourceFile = file;
+        }
+      }
+
+      const { dataUrl, aspectRatio } = await compressImageToDataURL(sourceFile);
       el.photoProgressFill.style.width = '70%';
       el.photoProgressLabel.textContent = 'Saving…';
 
@@ -2596,6 +2686,9 @@
     el.settingsSheet.setAttribute('aria-hidden', 'false');
     if (state.startDate) el.startDateInput.value = state.startDate;
     if (el.matchExposureToggle) el.matchExposureToggle.checked = !!state.matchExposure;
+    if (el.removeBgToggle) el.removeBgToggle.checked = !!state.removeBg;
+    if (el.bgColorInput) el.bgColorInput.value = state.bgColor || '#ededf0';
+    if (el.bgColorRow) el.bgColorRow.hidden = !state.removeBg;
     if (state.currentPhase && PHASES[state.currentPhase]) {
       el.resetPhaseLabel.textContent = `Restart ${PHASES[state.currentPhase].name}`;
     }
@@ -3066,6 +3159,27 @@
       saveState();
       restartPhotoCarousel();
       showToast(state.matchExposure ? 'Exposure matching on' : 'Exposure matching off');
+    });
+  }
+
+  if (el.removeBgToggle) {
+    el.removeBgToggle.addEventListener('change', (e) => {
+      state.removeBg = e.target.checked;
+      if (el.bgColorRow) el.bgColorRow.hidden = !state.removeBg;
+      saveState();
+      // Warm the model up in the background so the first upload isn't a long wait.
+      if (state.removeBg) loadBgRemover().catch(() => {});
+      showToast(state.removeBg ? 'Background removal on' : 'Background removal off');
+    });
+  }
+
+  if (el.bgColorInput) {
+    // Live-update while dragging the picker; persist + toast on commit.
+    el.bgColorInput.addEventListener('input', (e) => { state.bgColor = e.target.value; });
+    el.bgColorInput.addEventListener('change', (e) => {
+      state.bgColor = e.target.value;
+      saveState();
+      showToast('Background color updated');
     });
   }
 
