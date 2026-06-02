@@ -956,14 +956,16 @@
   // recoloring never re-runs the model. Tries RMBG-1.4, then imgly; throws if
   // both fail so the caller can keep the original photo.
   async function segmentToCutoutBlob(file) {
-    let canvas;
+    let canvas, model;
     try {
       canvas = await rmbgCutoutCanvas(file);
+      model = 'rmbg';
     } catch (e) {
       console.warn('RMBG cut-out failed; trying imgly fallback.', e);
       canvas = await imglyCutoutCanvas(file);
+      model = 'imgly';
     }
-    return encodeCutout(canvas);
+    return { blob: await encodeCutout(canvas), model };
   }
 
   // Draw `img` onto a fresh canvas, downscaled so its long edge ≤ PHOTO_MAX_DIM.
@@ -1114,13 +1116,20 @@
   const bgQueue = [];
   const bgQueued = new Set();
   let bgWorkerRunning = false;
+  // Days we've already attempted to upgrade this session — caps re-processing
+  // to once per day so a device that can't run RMBG doesn't loop forever.
+  const cutoutUpgradeTried = new Set();
+  const CUTOUT_MODEL = 'rmbg'; // the current best method
 
   function needsCutout(day) {
     const p = state.photos?.[day];
     if (!p) return false;
-    // Also re-process legacy baked cut-outs (no stored transparency) so they
-    // become recolorable like the rest.
-    return !p.hasCutout || !p.cutoutTransparent;
+    // No cut-out yet, or a legacy baked one (no stored transparency).
+    if (!p.hasCutout || !p.cutoutTransparent) return true;
+    // Re-run cut-outs made by an older method (e.g. the previous imgly version)
+    // through the current best model — once per day per session.
+    if (p.cutoutModel !== CUTOUT_MODEL && !cutoutUpgradeTried.has(day)) return true;
+    return false;
   }
 
   function enqueueCutout(day) {
@@ -1164,17 +1173,21 @@
   }
 
   async function processCutoutForDay(day) {
+    // Mark before the heavy work so a failure still counts as "attempted" and
+    // we don't re-queue the same day repeatedly this session.
+    cutoutUpgradeTried.add(day);
     const originalUrl = await fetchOriginalDataURL(day);
     if (!originalUrl) return;
     const srcBlob = await (await fetch(originalUrl)).blob();
-    const cutoutBlob = await segmentToCutoutBlob(srcBlob);
+    const { blob: cutoutBlob, model } = await segmentToCutoutBlob(srcBlob);
     const cutoutDataUrl = await blobToDataURL(cutoutBlob);
     const cref = cutoutDocRef(day);
     // Store the TRANSPARENT cut-out; the color is applied at display time.
-    if (cref) await cref.set({ data: cutoutDataUrl, transparent: true, uploadedAt: new Date().toISOString() });
+    if (cref) await cref.set({ data: cutoutDataUrl, transparent: true, model, uploadedAt: new Date().toISOString() });
     if (!state.photos[day]) state.photos[day] = {};
     state.photos[day].hasCutout = true;
     state.photos[day].cutoutTransparent = true;
+    state.photos[day].cutoutModel = model;
     saveState();
     // Cache the cut-out so recoloring is instant; drop the composited + luminance
     // caches so the cut-out shows on the next carousel pass.
@@ -3183,6 +3196,7 @@
       clearCarousel();
       photoDataCache.clear();
       cutoutDataCache.clear();
+      cutoutUpgradeTried.clear();
       state = defaultState();
       appPhase = 'auth';
       render();
