@@ -1602,8 +1602,8 @@
       tool: 'magic',
       brush: Math.max(10, Math.round(Math.max(w, h) * 0.04)),
       tolerance: 50,
-      searchRadius: 12,
-      gradient: null, lassoPts: null, lassoLastRaw: null,
+      searchRadius: 8,
+      gradient: null, lassoPts: null, lassoLastRaw: null, lassoSmooth: null,
       drawing: false, last: null, undo: [],
     };
 
@@ -1646,7 +1646,7 @@
     if (editState.tool === 'magic') {
       setLabel('Tolerance'); s.min = '5'; s.max = '150'; s.value = String(editState.tolerance);
     } else if (editState.tool === 'lasso') {
-      setLabel('Snap radius'); s.min = '4'; s.max = '30'; s.value = String(editState.searchRadius);
+      setLabel('Snap radius'); s.min = '0'; s.max = '30'; s.value = String(editState.searchRadius);
     } else {
       setLabel('Brush size'); s.min = '6'; s.max = '120'; s.value = String(editState.brush);
     }
@@ -1730,6 +1730,24 @@
     return { x: bx, y: by };
   }
 
+  // Trace a smooth curve through the points (quadratic through midpoints) so
+  // the outline reads as a flowing line, not chunky segments.
+  function traceLassoPath(ctx, pts) {
+    if (!pts.length) return;
+    ctx.moveTo(pts[0].x, pts[0].y);
+    if (pts.length < 3) {
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      return;
+    }
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    const n = pts.length;
+    ctx.quadraticCurveTo(pts[n - 2].x, pts[n - 2].y, pts[n - 1].x, pts[n - 1].y);
+  }
+
   // Composite + the in-progress lasso outline.
   function renderLasso() {
     renderEdit();
@@ -1741,13 +1759,12 @@
     ctx.lineWidth = Math.max(1.5, editState.w / 320);
     ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    traceLassoPath(ctx, pts);
     ctx.stroke();
     ctx.restore();
   }
 
-  // Erase everything enclosed by the lasso polygon (rasterized via canvas fill).
+  // Erase everything enclosed by the lasso curve (rasterized via canvas fill).
   function lassoApply() {
     const { lassoPts, baseImg, w, h } = editState;
     if (!lassoPts || lassoPts.length < 3) return;
@@ -1755,8 +1772,7 @@
     const tctx = tmp.getContext('2d', { willReadFrequently: true });
     tctx.fillStyle = '#fff';
     tctx.beginPath();
-    tctx.moveTo(lassoPts[0].x, lassoPts[0].y);
-    for (let i = 1; i < lassoPts.length; i++) tctx.lineTo(lassoPts[i].x, lassoPts[i].y);
+    traceLassoPath(tctx, lassoPts);
     tctx.closePath();
     tctx.fill();
     const mask = tctx.getImageData(0, 0, w, h).data;
@@ -1870,9 +1886,11 @@
     try { el.photoEditCanvas.setPointerCapture(e.pointerId); } catch {}
     const p = editPointerPos(e);
     if (editState.tool === 'lasso') {
-      // Collect a snapped outline; the erase happens on release.
+      // Collect a snapped + smoothed outline; the erase happens on release.
       editState.drawing = true;
-      editState.lassoPts = [lassoSnap(p.x, p.y)];
+      const s0 = lassoSnap(p.x, p.y);
+      editState.lassoSmooth = { x: s0.x, y: s0.y };
+      editState.lassoPts = [{ x: s0.x, y: s0.y }];
       editState.lassoLastRaw = p;
       renderLasso();
       showEditMagnifier(e);
@@ -1896,10 +1914,17 @@
     if (!editState || !editState.drawing) return;
     const p = editPointerPos(e);
     if (editState.tool === 'lasso') {
-      // Add a snapped vertex once the finger has moved a few pixels.
+      // Add a snapped + smoothed vertex once the finger has moved a few pixels.
       const last = editState.lassoLastRaw;
-      if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= 3) {
-        editState.lassoPts.push(lassoSnap(p.x, p.y));
+      if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= 2) {
+        const snapped = lassoSnap(p.x, p.y);
+        // Exponential smoothing: dampen jitter from hand shake and edge-snap
+        // jumps so the line flows instead of zig-zagging.
+        const sm = editState.lassoSmooth;
+        const a = 0.3;
+        sm.x += a * (snapped.x - sm.x);
+        sm.y += a * (snapped.y - sm.y);
+        editState.lassoPts.push({ x: sm.x, y: sm.y });
         editState.lassoLastRaw = p;
         renderLasso();
       }
