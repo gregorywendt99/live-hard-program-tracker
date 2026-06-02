@@ -1865,23 +1865,20 @@
     const setFade = (ms) => el.photosImageWrap.style.setProperty('--photo-fade-ms', `${ms}ms`);
 
     // Sequence pacing:
-    //  - Each photo is shown for at most 500 ms (so a 7-day journey isn't
-    //    needlessly stretched out).
-    //  - The whole sequence is capped at 10 s total (so a finished 75-day
-    //    journey doesn't take forever to watch).
-    //  - Floor of 60 ms keeps the cycle in lockstep with the rail even at
-    //    extreme photo counts (>166).
-    //  - Fade duration scales with dwell — long enough to feel smooth at
-    //    500 ms per photo, short enough to not blur the swap at 60 ms.
-    const SEQ_PER_PHOTO_MAX = 500;
-    const SEQ_TOTAL_MS = 10000;
-    const seqPerPhoto = Math.min(
-      SEQ_PER_PHOTO_MAX,
-      Math.max(60, Math.round(SEQ_TOTAL_MS / days.length))
-    );
-    // Fade is a quarter of the dwell — short cross-fade, photos read as
-    // distinct frames with a quick blend between them.
-    const seqFadeMs = Math.min(200, Math.max(40, Math.round(seqPerPhoto * 0.25)));
+    //  - The whole playthrough is capped at 5 s, no matter how many photos.
+    //  - A photo never dwells longer than 5000/75 ≈ 66.7 ms — the rate a full
+    //    75-day journey plays at. That's the "slowest" a photo can go, so a
+    //    short journey flips through just as briskly instead of crawling.
+    //  => dwell = 5000 / max(75, count): a flat ~66.7 ms each up to 75 photos
+    //     (total grows with count, e.g. 5 photos ≈ 0.33 s), then shrinking
+    //     past 75 photos so the total stays pinned at 5 s.
+    const SEQ_TOTAL_MS = 5000;
+    const SEQ_PACE_DAYS = 75;
+    // Floor (not round) so 75 photos × dwell never tips over the 5 s ceiling
+    // and a photo never dwells longer than 5000/75 ≈ 66 ms.
+    const seqPerPhoto = Math.floor(SEQ_TOTAL_MS / Math.max(SEQ_PACE_DAYS, days.length));
+    // Keep the cross-fade under half the (short) dwell so frames stay distinct.
+    const seqFadeMs = Math.max(16, Math.min(60, Math.round(seqPerPhoto * 0.5)));
 
     // "Then vs Now" gets a calmer dwell + smoother fade for contrast
     const compareDwellMs = 2000;
@@ -1907,15 +1904,11 @@
         setFade(seqFadeMs);
         setCarouselMode('Sequence');
         const seqOpts = { lightRail: true };
-        const SEQ_INTRO_DWELL_MS = 1000; // pause on the starting frame
         for (let i = 0; i < days.length; i++) {
           if (cancelled) break;
           await showPhotoDay(days[i], seqOpts);
           if (cancelled) break;
-          // Hold on the first photo a bit longer so the user has time to
-          // register the starting point before the rapid playthrough.
-          const dwell = i === 0 ? Math.max(seqPerPhoto, SEQ_INTRO_DWELL_MS) : seqPerPhoto;
-          await wait(dwell);
+          await wait(seqPerPhoto);
         }
       }
     }
