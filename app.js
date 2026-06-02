@@ -3831,9 +3831,14 @@
       case 'touchup-save': saveEdit(); break;
       case 'touchup-undo': editUndo(); break;
       case 'touchup-reset': editReset(); break;
-      case 'touchup-tool':
-        if (editState) { editState.tool = t.dataset.tool === 'restore' ? 'restore' : 'erase'; updateEditTools(); }
+      case 'touchup-tool': {
+        const tool = t.dataset.tool;
+        if (editState && ['magic', 'lasso', 'erase', 'restore'].includes(tool)) {
+          editState.tool = tool;
+          updateEditTools();
+        }
         break;
+      }
       case 'open-align': openAlignView(); break;
       case 'photo-align-cancel': closeAlignView(); break;
       case 'photo-align-save': savePhotoAlignment(); break;
