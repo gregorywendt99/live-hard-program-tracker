@@ -1558,6 +1558,12 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 }
 .photo-edit-actions .btn { flex: 1; }
 
+.photo-edit-magnifier-canvas {
+  display: block;
+  width: 150px;
+  height: 150px;
+}
+
 .photo-progress { margin: 12px 0 16px; }
 .photo-progress-bar {
   height: 6px;

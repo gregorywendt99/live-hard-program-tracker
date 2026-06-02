@@ -356,6 +356,8 @@
     photoEditRestore: $('#photoEditRestore'),
     photoEditBrush: $('#photoEditBrush'),
     photoEditSliderLabel: $('#photoEditSliderLabel'),
+    photoEditMagnifier: $('#photoEditMagnifier'),
+    photoEditMagnifierCanvas: $('#photoEditMagnifierCanvas'),
     photoAlignBtn: $('#photoAlignBtn'),
     photoAlignStage: $('#photoAlignStage'),
     photoAlignActions: $('#photoAlignActions'),
@@ -1617,6 +1619,7 @@
 
   function closeEditView() {
     editState = null;
+    hideEditMagnifier();
     el.photoEditStage.hidden = true;
     el.photoEditActions.hidden = true;
     el.photoPreview.style.display = '';
@@ -1810,6 +1813,57 @@
     if (editState.undo.length > 20) editState.undo.shift();
   }
 
+  // Loupe magnifier — same look/behavior as the alignment pin magnifier, but it
+  // zooms a live copy of the edit canvas (so you see the snapped lasso outline
+  // and the exact pixel under your finger).
+  const EDIT_MAG_SIZE = 150;
+  const EDIT_MAG_ZOOM = 3.5;
+
+  function showEditMagnifier(e) {
+    if (!el.photoEditMagnifier) return;
+    el.photoEditMagnifier.hidden = false;
+    updateEditMagnifier(e);
+  }
+
+  function updateEditMagnifier(e) {
+    const mag = el.photoEditMagnifier;
+    const mc = el.photoEditMagnifierCanvas;
+    if (!mag || mag.hidden || !mc || !editState) return;
+    const cv = el.photoEditCanvas;
+    const rect = cv.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const M = EDIT_MAG_SIZE, S = EDIT_MAG_ZOOM;
+    const dispScale = rect.width / cv.width;       // display px per native px
+    const nx = (e.clientX - rect.left) / dispScale; // native canvas coords
+    const ny = (e.clientY - rect.top) / dispScale;
+    const srcW = M / (S * dispScale);              // native px shown in the loupe
+    const scale = M / srcW;
+
+    const ctx = mc.getContext('2d');
+    ctx.fillStyle = state.bgColor || '#000';
+    ctx.fillRect(0, 0, M, M);
+    let sx = nx - srcW / 2, sy = ny - srcW / 2, sw = srcW, sh = srcW, dx = 0, dy = 0;
+    if (sx < 0) { dx = -sx * scale; sw += sx; sx = 0; }
+    if (sy < 0) { dy = -sy * scale; sh += sy; sy = 0; }
+    if (sx + sw > cv.width) sw = cv.width - sx;
+    if (sy + sh > cv.height) sh = cv.height - sy;
+    if (sw > 0 && sh > 0) ctx.drawImage(cv, sx, sy, sw, sh, dx, dy, sw * scale, sh * scale);
+
+    // Place near the finger (above, else below), clamped to the viewport.
+    const MARGIN = 12, GAP = 40;
+    let mx = e.clientX - M / 2;
+    let my = e.clientY - M - GAP;
+    if (my < MARGIN) my = e.clientY + GAP;
+    mx = Math.max(MARGIN, Math.min(window.innerWidth - M - MARGIN, mx));
+    my = Math.max(MARGIN, Math.min(window.innerHeight - M - MARGIN, my));
+    mag.style.left = `${mx}px`;
+    mag.style.top = `${my}px`;
+  }
+
+  function hideEditMagnifier() {
+    if (el.photoEditMagnifier) el.photoEditMagnifier.hidden = true;
+  }
+
   function editPointerDown(e) {
     if (!editState) return;
     e.preventDefault();
@@ -1821,6 +1875,7 @@
       editState.lassoPts = [lassoSnap(p.x, p.y)];
       editState.lassoLastRaw = p;
       renderLasso();
+      showEditMagnifier(e);
       return;
     }
     pushEditUndo();
@@ -1834,6 +1889,7 @@
     editState.last = p;
     editPaintAt(p.x, p.y);
     renderEdit();
+    showEditMagnifier(e);
   }
 
   function editPointerMove(e) {
@@ -1847,11 +1903,13 @@
         editState.lassoLastRaw = p;
         renderLasso();
       }
+      updateEditMagnifier(e);
       return;
     }
     editStroke(editState.last, p);
     editState.last = p;
     renderEdit();
+    updateEditMagnifier(e);
   }
 
   function editPointerUp() {
@@ -1866,6 +1924,7 @@
       renderEdit();
     }
     editState.drawing = false;
+    hideEditMagnifier();
   }
 
   function editUndo() {
@@ -3942,6 +4001,11 @@
     el.photoEditCanvas.addEventListener('pointermove', editPointerMove);
     el.photoEditCanvas.addEventListener('pointerup', editPointerUp);
     el.photoEditCanvas.addEventListener('pointercancel', editPointerUp);
+  }
+  // Re-parent the loupe to <body> so position:fixed escapes the sheet's
+  // clipping/scroll (same as the alignment magnifier).
+  if (el.photoEditMagnifier && el.photoEditMagnifier.parentElement !== document.body) {
+    document.body.appendChild(el.photoEditMagnifier);
   }
 
   // Start date
