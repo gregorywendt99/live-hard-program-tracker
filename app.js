@@ -86,7 +86,8 @@
   let unsubFirestore = null;
   let saveDebounceTimer = null;
   let initialLoadDone = false;
-  const photoDataCache = new Map(); // dayNum -> data URL string
+  const photoDataCache = new Map(); // dayNum -> displayed data URL (composited or original)
+  const cutoutDataCache = new Map(); // dayNum -> { data: transparent cut-out URL, transparent }
   let photoSheetDay = null;
   let photoUploadInProgress = false;
   let authMode = 'signin';
@@ -879,30 +880,69 @@
   // background ends up fully opaque, the result is a plain JPEG — no alpha — so
   // it flows through the normal compress/store pipeline unchanged. Throws on any
   // failure so the caller can fall back to the original photo.
-  async function cutoutOntoColor(file, color, onProgress) {
+  // Run the segmentation model and return the subject as a size-bounded WebP
+  // with transparency preserved. The flat background COLOR is applied later, at
+  // display time — so the subject is only ever cut out once, and recoloring
+  // never re-runs the model. This is the heavy step.
+  async function segmentToCutoutBlob(file, onProgress) {
     const mod = await loadBgRemover();
     const removeBackground = mod.removeBackground || mod.default?.removeBackground;
     if (typeof removeBackground !== 'function') throw new Error('Remover API missing');
-
-    const cutBlob = await removeBackground(file, {
-      output: { format: 'image/png' }, // keep alpha for the composite step
+    const cutPng = await removeBackground(file, {
+      output: { format: 'image/png' }, // PNG out of the model keeps alpha
       progress: (_key, current, total) => {
         if (onProgress && total) onProgress(Math.min(1, current / total));
       },
     });
+    return compressCutout(cutPng);
+  }
 
-    const cutImg = await decodeBlobToImage(cutBlob);
+  // Re-encode an alpha cut-out to a size-bounded WebP (transparency kept) so it
+  // fits Firestore's 1MB per-doc limit the way the JPEG originals do.
+  async function compressCutout(blob) {
+    const img = await decodeBlobToImage(blob);
+    let width = img.naturalWidth || img.width;
+    let height = img.naturalHeight || img.height;
+    const longer = Math.max(width, height);
+    if (longer > PHOTO_MAX_DIM) {
+      const scale = PHOTO_MAX_DIM / longer;
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
     const canvas = document.createElement('canvas');
-    canvas.width = cutImg.naturalWidth || cutImg.width;
-    canvas.height = cutImg.naturalHeight || cutImg.height;
+    canvas.width = width;
+    canvas.height = height;
+    canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+    for (const q of [0.85, 0.75, 0.6, 0.5]) {
+      const out = await new Promise((r) => canvas.toBlob(r, 'image/webp', q));
+      if (out && out.size <= PHOTO_MAX_BYTES) return out;
+    }
+    // Last resort: lowest-quality WebP, or PNG if the browser can't encode WebP.
+    const last = await new Promise((r) => canvas.toBlob(r, 'image/webp', 0.4));
+    return last || await new Promise((r) => canvas.toBlob(r, 'image/png'));
+  }
+
+  function blobToDataURL(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Read failed'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  // Paint a transparent cut-out onto a solid color → JPEG data URL. Cheap (no
+  // model): this is what makes recoloring instant.
+  async function compositeCutoutDataURL(cutoutDataUrl, color) {
+    const img = await loadImage(cutoutDataUrl);
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = color || '#ededf0';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(cutImg, 0, 0);
-
-    const outBlob = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.92));
-    if (!outBlob) throw new Error('Compositing failed');
-    return outBlob;
+    ctx.drawImage(img, 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.9);
   }
 
   /* ----- Background-removal queue ------------------------------------- */
@@ -917,7 +957,11 @@
   let bgWorkerRunning = false;
 
   function needsCutout(day) {
-    return !!(state.photos?.[day] && !state.photos[day].hasCutout);
+    const p = state.photos?.[day];
+    if (!p) return false;
+    // Also re-process legacy baked cut-outs (no stored transparency) so they
+    // become recolorable like the rest.
+    return !p.hasCutout || !p.cutoutTransparent;
   }
 
   function enqueueCutout(day) {
@@ -964,15 +1008,18 @@
     const originalUrl = await fetchOriginalDataURL(day);
     if (!originalUrl) return;
     const srcBlob = await (await fetch(originalUrl)).blob();
-    const composited = await cutoutOntoColor(srcBlob, state.bgColor);
-    const { dataUrl: cutoutUrl } = await compressImageToDataURL(composited);
+    const cutoutBlob = await segmentToCutoutBlob(srcBlob);
+    const cutoutDataUrl = await blobToDataURL(cutoutBlob);
     const cref = cutoutDocRef(day);
-    if (cref) await cref.set({ data: cutoutUrl, bgColor: state.bgColor, uploadedAt: new Date().toISOString() });
+    // Store the TRANSPARENT cut-out; the color is applied at display time.
+    if (cref) await cref.set({ data: cutoutDataUrl, transparent: true, uploadedAt: new Date().toISOString() });
     if (!state.photos[day]) state.photos[day] = {};
     state.photos[day].hasCutout = true;
-    state.photos[day].cutoutBgColor = state.bgColor;
+    state.photos[day].cutoutTransparent = true;
     saveState();
-    // Surface it: drop caches so the next carousel pass shows the cut-out.
+    // Cache the cut-out so recoloring is instant; drop the composited + luminance
+    // caches so the cut-out shows on the next carousel pass.
+    cutoutDataCache.set(day, { data: cutoutDataUrl, transparent: true });
     photoDataCache.delete(day);
     luminanceCache.delete(day);
     if (photoSheetDay === day) renderPhotoSheet();
@@ -1043,17 +1090,40 @@
   }
 
   async function fetchPhotoURL(dayNum) {
-    // Cache is cleared whenever the cut-out/original choice changes (see the
-    // toggle handler), so a plain day key is unambiguous within one state.
+    // photoDataCache holds the *displayed* image (composited cut-out, or the
+    // original). It's cleared when the color or the on/off choice changes.
     if (photoDataCache.has(dayNum)) return photoDataCache.get(dayNum);
-    const wantCutout = showCutoutFor(dayNum);
-    const ref = wantCutout ? cutoutDocRef(dayNum) : photoDocRef(dayNum);
+
+    if (showCutoutFor(dayNum)) {
+      // Fetch the stored cut-out once (kept in cutoutDataCache), then paint the
+      // CURRENT color onto it. Recoloring later just re-composites from this
+      // cache — no model, no re-fetch.
+      let cutout = cutoutDataCache.get(dayNum);
+      if (cutout === undefined) {
+        cutout = null;
+        try {
+          const snap = await cutoutDocRef(dayNum)?.get();
+          if (snap && snap.exists) cutout = snap.data() || null;
+        } catch (e) { console.error('Cut-out fetch failed', e); }
+        if (cutout && cutout.data) cutoutDataCache.set(dayNum, cutout);
+      }
+      if (cutout && cutout.data) {
+        // Transparent cut-outs get the color applied now; legacy baked ones
+        // (pre-transparency) are already flat JPEGs.
+        const url = cutout.transparent
+          ? await compositeCutoutDataURL(cutout.data, state.bgColor)
+          : cutout.data;
+        photoDataCache.set(dayNum, url);
+        return url;
+      }
+      // Cut-out missing (e.g. mid-backfill) — fall through to the original.
+    }
+
+    const ref = photoDocRef(dayNum);
     if (!ref) return null;
     try {
-      let snap = await ref.get();
-      // Safety net: if a cut-out is somehow missing, fall back to the original.
-      if (wantCutout && (!snap || !snap.exists)) snap = await photoDocRef(dayNum).get();
-      if (!snap || !snap.exists) return null;
+      const snap = await ref.get();
+      if (!snap.exists) return null;
       const data = snap.data()?.data;
       if (!data) return null;
       photoDataCache.set(dayNum, data);
@@ -1160,6 +1230,7 @@
       // A fresh original supersedes any cut-out from a previous photo this day.
       const staleCutout = cutoutDocRef(dayNum);
       if (staleCutout) await staleCutout.delete().catch(() => {});
+      cutoutDataCache.delete(dayNum);
 
       el.photoProgressFill.style.width = '100%';
       el.photoProgressLabel.textContent = 'Done';
@@ -1169,7 +1240,7 @@
       if (!state.photos) state.photos = {};
       // hasCutout starts false; the queue flips it to true once the cut-out is
       // produced. Until then the original shows.
-      state.photos[dayNum] = { uploadedAt: nowISO, hasCutout: false, cutoutBgColor: null };
+      state.photos[dayNum] = { uploadedAt: nowISO, hasCutout: false, cutoutTransparent: false };
 
       // Lock in the viewport aspect ratio to the first photo uploaded.
       if (!state.photoAspectRatio && Number.isFinite(aspectRatio) && aspectRatio > 0) {
@@ -1217,6 +1288,7 @@
           if (cref) await cref.delete();
         } catch (e) { console.warn('Delete failed (may not exist)', e); }
         photoDataCache.delete(dayNum);
+        cutoutDataCache.delete(dayNum);
         luminanceCache.delete(dayNum);
         if (state.photos) delete state.photos[dayNum];
         saveState();
@@ -2940,6 +3012,7 @@
       if (unsubFirestore) { unsubFirestore(); unsubFirestore = null; }
       clearCarousel();
       photoDataCache.clear();
+      cutoutDataCache.clear();
       state = defaultState();
       appPhase = 'auth';
       render();
@@ -3324,6 +3397,13 @@
     el.bgColorInput.addEventListener('change', (e) => {
       state.bgColor = e.target.value;
       saveState();
+      if (state.removeBg) {
+        // Recolor every cut-out from its stored transparent data — no model
+        // rerun, no re-fetch. Clear only the composited cache; keep the cut-outs.
+        photoDataCache.clear();
+        luminanceCache.clear();
+        restartPhotoCarousel();
+      }
       showToast('Background color updated');
     });
   }
