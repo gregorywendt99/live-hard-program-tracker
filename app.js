@@ -113,6 +113,7 @@
     photoAlignmentRef: { r1: { x: 0.5, y: 0.22 }, r2: { x: 0.5, y: 0.5 }, r3: { x: 0.5, y: 0.78 } },
     photoAspectRatio: null, // width / height of the first uploaded photo
     matchExposure: false, // normalize each photo's brightness to the reference
+    crossfade: false, // dissolve between photos in the timeline (off = hard cut)
     alignmentReferenceDay: null, // journey day whose photo set the alignment reference
     removeBg: false, // cut the subject out of new photos and place on a backdrop
     hasBgImage: false, // whether a background image has been uploaded
@@ -310,6 +311,7 @@
     toast: $('#toast'),
     startDateInput: $('#startDateInput'),
     matchExposureToggle: $('#matchExposureToggle'),
+    crossfadeToggle: $('#crossfadeToggle'),
     removeBgToggle: $('#removeBgToggle'),
     bgImageRow: $('#bgImageRow'),
     bgImagePreview: $('#bgImagePreview'),
@@ -2951,15 +2953,17 @@
     const SEQ_LOOP_HOLD_MS = 2000;
 
     while (!cancelled) {
+      // When crossfade is off, swap photos instantly (a hard cut).
+      const noFade = !state.crossfade;
       // Phase 1: "Then vs Now" — skipped in pure sequence mode
       if (userCarouselMode !== 'sequence') {
         setFade(compareFadeMs);
         setCarouselMode('Then vs Now');
-        await showPhotoDay(days[0], { lightRail: true });
+        await showPhotoDay(days[0], { lightRail: true, instant: noFade });
         if (cancelled) break;
         await wait(compareDwellMs);
         if (cancelled) break;
-        await showPhotoDay(days[days.length - 1], { lightRail: true });
+        await showPhotoDay(days[days.length - 1], { lightRail: true, instant: noFade });
         if (cancelled) break;
         await wait(compareDwellMs);
         if (cancelled) break;
@@ -2969,7 +2973,7 @@
       if (userCarouselMode !== 'compare') {
         setFade(seqFadeMs);
         setCarouselMode('Sequence');
-        const seqOpts = { lightRail: true };
+        const seqOpts = { lightRail: true, instant: noFade };
         // Only pause on the first frame when Sequence is the looping mode.
         const firstHold = userCarouselMode === 'sequence' ? SEQ_LOOP_HOLD_MS : seqPerPhoto;
         for (let i = 0; i < days.length; i++) {
@@ -3664,6 +3668,7 @@
     el.settingsSheet.setAttribute('aria-hidden', 'false');
     if (state.startDate) el.startDateInput.value = state.startDate;
     if (el.matchExposureToggle) el.matchExposureToggle.checked = !!state.matchExposure;
+    if (el.crossfadeToggle) el.crossfadeToggle.checked = !!state.crossfade;
     if (el.removeBgToggle) el.removeBgToggle.checked = !!state.removeBg;
     renderBgImageSettings();
     if (state.currentPhase && PHASES[state.currentPhase]) {
@@ -4163,6 +4168,15 @@
       saveState();
       restartPhotoCarousel();
       showToast(state.matchExposure ? 'Brightness matching on' : 'Brightness matching off');
+    });
+  }
+
+  if (el.crossfadeToggle) {
+    el.crossfadeToggle.addEventListener('change', (e) => {
+      state.crossfade = e.target.checked;
+      saveState();
+      restartPhotoCarousel();
+      showToast(state.crossfade ? 'Crossfade on' : 'Crossfade off (instant cut)');
     });
   }
 
