@@ -2819,15 +2819,20 @@
     else renderPhotoRail(day);
 
     if (opts.instant) {
-      // Hard swap — opacity flips to 1 with no transition, so the new image
-      // appears immediately while the old layer stays at opacity 1
-      // underneath. No fade duration, no flicker.
+      // Hard swap — opacity flips to 1 with no transition. For opaque images
+      // the old layer can stay at 1 underneath (it's covered); transparent
+      // cut-outs don't cover it, so hide it to avoid two subjects at once.
       backEl.style.opacity = '1';
+      if (transparentSubject) frontEl.style.opacity = '0';
     } else {
-      // Crossfade — restore the CSS transition and animate to 1
+      // Crossfade — restore the CSS transition and animate to 1. In transparent
+      // mode also fade the previous subject out (a real cross-dissolve), so it
+      // doesn't linger showing through the new one.
       backEl.style.transition = '';
+      if (transparentSubject) frontEl.style.transition = '';
       requestAnimationFrame(() => {
         backEl.style.opacity = '1';
+        if (transparentSubject) frontEl.style.opacity = '0';
       });
     }
 
