@@ -2430,11 +2430,13 @@ button.cal-day { cursor: pointer; }
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform-origin: center;
   pointer-events: none;
   user-select: none;
 }
-.bg-align-ghost { opacity: 0.25; }
+.bg-align-img { transform-origin: center; }
+/* The ghost uses the alignment matrix, which assumes a top-left origin
+   (same as the carousel's .photos-image). */
+.bg-align-ghost { opacity: 0.25; transform-origin: 0 0; }
 .bg-align-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .bg-align-controls input[type="range"] { flex: 1; accent-color: var(--accent); }
 .bg-align-actions { display: flex; gap: 10px; }

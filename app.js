@@ -1262,7 +1262,13 @@
     // you can see where everything is and line the background up to it.
     const ghostUrl = refDay ? await fetchOriginalDataURL(refDay) : null;
     const t = state.bgImageTransform || { scale: 1, tx: 0, ty: 0, rotate: 0 };
-    bgAlignState = { scale: t.scale || 1, tx: t.tx || 0, ty: t.ty || 0, rotate: t.rotate || 0, dragging: false, lastX: 0, lastY: 0 };
+    bgAlignState = {
+      scale: t.scale || 1, tx: t.tx || 0, ty: t.ty || 0, rotate: t.rotate || 0,
+      // The reference photo's own alignment, so the ghost previews it the way
+      // the carousel displays it (zoomed/cropped), not the raw upload.
+      ghostAlignment: (refDay && state.photos?.[refDay]?.alignment) || null,
+      dragging: false, lastX: 0, lastY: 0,
+    };
     el.bgAlignImg.src = bgUrl;
     if (ghostUrl) { el.bgAlignGhost.src = ghostUrl; el.bgAlignGhost.style.display = 'block'; }
     else el.bgAlignGhost.style.display = 'none';
@@ -1270,6 +1276,18 @@
     if (el.bgAlignRotate) el.bgAlignRotate.value = String(bgAlignState.rotate);
     applyBgAlignTransform();
     el.bgAlignSheet.setAttribute('aria-hidden', 'false');
+    // Apply the ghost's alignment once the stage has its dimensions.
+    requestAnimationFrame(applyGhostTransform);
+  }
+
+  // Match the carousel: show the reference photo with its alignment transform
+  // so you align the background to where the body actually appears.
+  function applyGhostTransform() {
+    if (!bgAlignState || !el.bgAlignGhost || !el.bgAlignStage) return;
+    const W = el.bgAlignStage.clientWidth;
+    const H = el.bgAlignStage.clientHeight;
+    const a = bgAlignState.ghostAlignment;
+    el.bgAlignGhost.style.transform = (a && W && H) ? alignmentMatrixCSS(a, defaultRef(), W, H) : '';
   }
 
   function closeBgAlignView() {
