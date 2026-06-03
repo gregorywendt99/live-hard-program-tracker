@@ -116,6 +116,9 @@
     alignmentReferenceDay: null, // journey day whose photo set the alignment reference
     removeBg: false, // cut the subject out of new photos and place on a backdrop
     hasBgImage: false, // whether a background image has been uploaded
+    // Position of the fixed background behind the cut-outs (set via the
+    // "Align background" tool). scale = zoom, tx/ty = pan as a fraction of size.
+    bgImageTransform: { scale: 1, tx: 0, ty: 0 },
   });
 
   let state = defaultState();
@@ -381,6 +384,7 @@
     photosStage: $('#photosStage'),
     photosImageA: $('#photosImageA'),
     photosImageB: $('#photosImageB'),
+    photosBgLayer: $('#photosBgLayer'),
     photosImageWrap: $('.photos-image-wrap'),
     photosEmpty: $('#photosEmpty'),
     photosDayTag: $('#photosDayTag'),
@@ -2506,6 +2510,7 @@
   function photoLayers() { return [el.photosImageA, el.photosImageB]; }
 
   function resetPhotoLayers() {
+    if (el.photosBgLayer) { el.photosBgLayer.style.display = 'none'; el.photosBgLayer.removeAttribute('src'); }
     for (const layer of photoLayers()) {
       layer.style.transition = 'none';
       layer.style.opacity = '0';
@@ -2628,11 +2633,52 @@
     });
   }
 
+  // True when the carousel should overlay the transparent cut-out on the fixed
+  // background layer instead of a baked composite.
+  function useFixedBg(day) {
+    return state.removeBg && state.hasBgImage && showCutoutFor(day);
+  }
+
+  // The transparent cut-out (subject only) for `day`, for overlaying on the
+  // fixed background. Null if there isn't a transparent one.
+  async function getCutoutTransparentURL(day) {
+    let cutout = cutoutDataCache.get(day);
+    if (cutout === undefined) {
+      cutout = null;
+      try { const snap = await cutoutDocRef(day)?.get(); if (snap && snap.exists) cutout = snap.data() || null; }
+      catch (e) { console.error('Cut-out fetch failed', e); }
+      if (cutout && cutout.data) cutoutDataCache.set(day, cutout);
+    }
+    return (cutout && cutout.transparent && cutout.data) ? cutout.data : null;
+  }
+
+  // Show + position the fixed background layer, or hide it.
+  async function updateBgLayer(show) {
+    const layer = el.photosBgLayer;
+    if (!layer) return;
+    if (!show) { layer.style.display = 'none'; return; }
+    const url = await getBgImageDataUrl();
+    if (!url) { layer.style.display = 'none'; return; }
+    if (layer.getAttribute('src') !== url) layer.setAttribute('src', url);
+    const t = state.bgImageTransform || { scale: 1, tx: 0, ty: 0 };
+    layer.style.transform = `translate(${(t.tx || 0) * 100}%, ${(t.ty || 0) * 100}%) scale(${t.scale || 1})`;
+    layer.style.display = 'block';
+  }
+
   async function showPhotoDay(day, opts = {}) {
     if (!day) return;
-    const url = await fetchPhotoURL(day);
+    // In fixed-background mode, show the transparent cut-out over the bg layer;
+    // otherwise the composited/original image as before.
+    const fixedBg = useFixedBg(day);
+    let url = null, transparentSubject = false;
+    if (fixedBg) {
+      url = await getCutoutTransparentURL(day);
+      if (url) transparentSubject = true;
+    }
+    if (!url) url = await fetchPhotoURL(day);
     if (!url) return;
     await preloadImage(url);
+    await updateBgLayer(transparentSubject);
     const alignment = state.photos?.[day]?.alignment;
     const ref = defaultRef();
     const W = el.photosImageWrap.clientWidth;

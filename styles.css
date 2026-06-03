@@ -1707,6 +1707,20 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
   pointer-events: none;
 }
 
+/* Fixed backdrop behind the cut-outs (shown only in remove-background +
+   background-image mode). The cut-out layers paint on top of it. */
+.photos-bg-layer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: none;
+  z-index: 0;
+  transform-origin: center;
+  pointer-events: none;
+}
+
 .photos-empty {
   position: absolute;
   inset: 0;
