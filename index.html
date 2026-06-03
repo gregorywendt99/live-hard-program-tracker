@@ -386,14 +386,22 @@
             <label class="settings-toggle-row">
               <span class="settings-toggle-text">
                 <span class="settings-label">Remove background</span>
-                <span class="settings-hint">Cut you out of each new progress photo and place you on a solid color, so a changing backdrop doesn't distract from your transformation. Your original photos are always kept — turn this off anytime to bring their real backgrounds back. Runs on your device; the first use downloads the remover once.</span>
+                <span class="settings-hint">Cut you out of each new progress photo and place you on a background of your choice, so a changing backdrop doesn't distract from your transformation. Your original photos are always kept — turn this off anytime to bring their real backgrounds back. Runs on your device; the first use downloads the remover once.</span>
               </span>
               <input type="checkbox" id="removeBgToggle" class="settings-switch" />
             </label>
-            <div class="settings-row" id="bgColorRow" hidden>
-              <label class="settings-label" for="bgColorInput">Background color</label>
-              <input type="color" id="bgColorInput" class="color-input" value="#ededf0" aria-label="Background color" />
+            <div class="settings-row" id="bgImageRow" hidden>
+              <div class="settings-toggle-text">
+                <span class="settings-label">Background image</span>
+                <span class="settings-hint" style="margin:4px 0 0;">Upload a photo to place behind you. Without one, a neutral backdrop is used.</span>
+              </div>
+              <div class="bg-image-controls">
+                <img id="bgImagePreview" class="bg-image-preview" alt="Background preview" hidden />
+                <button type="button" class="settings-mini-btn" id="bgImagePickBtn" data-action="pick-bg-image">Choose image</button>
+                <button type="button" class="settings-mini-btn settings-mini-btn-danger" id="bgImageRemoveBtn" data-action="remove-bg-image" hidden>Remove</button>
+              </div>
             </div>
+            <input type="file" accept="image/*" id="bgImageInput" hidden />
           </div>
 
           <div class="settings-group">

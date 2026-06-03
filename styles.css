@@ -2369,20 +2369,32 @@ button.cal-day { cursor: pointer; }
 .settings-toggle-row + .settings-toggle-row,
 .settings-toggle-row + .settings-row { margin-top: 10px; }
 
-.color-input {
+.bg-image-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex-shrink: 0;
-  width: 48px;
-  height: 32px;
-  padding: 2px;
-  border: 1px solid var(--separator-strong);
-  border-radius: 8px;
-  background: var(--bg-elevated);
-  cursor: pointer;
-  color-scheme: light dark;
 }
-.color-input::-webkit-color-swatch-wrapper { padding: 0; }
-.color-input::-webkit-color-swatch { border: none; border-radius: 5px; }
-.color-input::-moz-color-swatch { border: none; border-radius: 5px; }
+.bg-image-preview {
+  width: 44px;
+  height: 44px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--separator-strong);
+}
+.settings-mini-btn {
+  border: 1px solid var(--separator-strong);
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.settings-mini-btn-danger { color: var(--danger); }
 
 .settings-hint {
   font-size: 13px;

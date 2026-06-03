@@ -114,8 +114,8 @@
     photoAspectRatio: null, // width / height of the first uploaded photo
     matchExposure: false, // normalize each photo's brightness to the reference
     alignmentReferenceDay: null, // journey day whose photo set the alignment reference
-    removeBg: false, // cut the subject out of new photos and place on a flat color
-    bgColor: '#ededf0', // the flat color a cut-out subject is composited onto
+    removeBg: false, // cut the subject out of new photos and place on a backdrop
+    hasBgImage: false, // whether a background image has been uploaded
   });
 
   let state = defaultState();
@@ -307,8 +307,11 @@
     startDateInput: $('#startDateInput'),
     matchExposureToggle: $('#matchExposureToggle'),
     removeBgToggle: $('#removeBgToggle'),
-    bgColorRow: $('#bgColorRow'),
-    bgColorInput: $('#bgColorInput'),
+    bgImageRow: $('#bgImageRow'),
+    bgImagePreview: $('#bgImagePreview'),
+    bgImagePickBtn: $('#bgImagePickBtn'),
+    bgImageRemoveBtn: $('#bgImageRemoveBtn'),
+    bgImageInput: $('#bgImageInput'),
     photosBgStatus: $('#photosBgStatus'),
     waitProgressFill: $('#waitProgressFill'),
     waitDaysDone: $('#waitDaysDone'),
@@ -1101,16 +1104,119 @@
 
   // Paint a transparent cut-out onto a solid color → JPEG data URL. Cheap (no
   // model): this is what makes recoloring instant.
-  async function compositeCutoutDataURL(cutoutDataUrl, color) {
+  // Neutral backdrop used until/unless a background image is uploaded.
+  const BG_FALLBACK_COLOR = '#ededf0';
+
+  // Background image (a green-screen-style backdrop placed behind every
+  // cut-out). Stored once in its own Firestore doc; cached here.
+  let bgImageDataUrl = null;
+  let bgImageEl = null;
+
+  function bgImageDocRef() {
+    if (!firestore || !currentUser) return null;
+    return firestore.collection('users').doc(currentUser.uid).collection('meta').doc('background');
+  }
+
+  async function getBgImageDataUrl() {
+    if (bgImageDataUrl) return bgImageDataUrl;
+    if (!state.hasBgImage) return null;
+    const ref = bgImageDocRef();
+    if (!ref) return null;
+    try {
+      const snap = await ref.get();
+      bgImageDataUrl = snap.exists ? (snap.data()?.data || null) : null;
+      return bgImageDataUrl;
+    } catch (e) { console.error('Background image fetch failed', e); return null; }
+  }
+
+  async function getBgImage() {
+    if (!state.hasBgImage) return null;
+    if (bgImageEl) return bgImageEl;
+    const url = await getBgImageDataUrl();
+    if (!url) return null;
+    try { bgImageEl = await loadImage(url); return bgImageEl; }
+    catch { return null; }
+  }
+
+  // Draw `img` to fill w×h, cropping overflow (object-fit: cover).
+  function drawImageCover(ctx, img, w, h) {
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    const scale = Math.max(w / iw, h / ih);
+    const dw = iw * scale, dh = ih * scale;
+    ctx.drawImage(img, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+
+  // Paint a transparent cut-out onto the backdrop (uploaded image, else a
+  // neutral color) and return a JPEG data URL. Cheap (no model) — changing the
+  // background just re-composites.
+  async function compositeCutoutDataURL(cutoutDataUrl) {
     const img = await loadImage(cutoutDataUrl);
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
     const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth || img.width;
-    canvas.height = img.naturalHeight || img.height;
+    canvas.width = w; canvas.height = h;
     const ctx = canvas.getContext('2d');
-    ctx.fillStyle = color || '#ededf0';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const bg = await getBgImage();
+    if (bg) {
+      drawImageCover(ctx, bg, w, h);
+    } else {
+      ctx.fillStyle = BG_FALLBACK_COLOR;
+      ctx.fillRect(0, 0, w, h);
+    }
     ctx.drawImage(img, 0, 0);
     return canvas.toDataURL('image/jpeg', 0.9);
+  }
+
+  async function uploadBgImage(file) {
+    if (!firestore || !currentUser) { showToast('Sign in first to set a background.'); return; }
+    try {
+      const { dataUrl } = await compressImageToDataURL(file);
+      const ref = bgImageDocRef();
+      if (ref) await ref.set({ data: dataUrl, uploadedAt: new Date().toISOString() });
+      bgImageDataUrl = dataUrl;
+      bgImageEl = null; // re-decode on next composite
+      state.hasBgImage = true;
+      saveState();
+      // Re-composite every cut-out onto the new background (no model rerun).
+      photoDataCache.clear();
+      luminanceCache.clear();
+      renderBgImageSettings();
+      restartPhotoCarousel();
+      showToast('Background image set.');
+    } catch (e) {
+      console.error('Background image upload failed', e);
+      showToast(e?.message || 'Couldn’t set that background.');
+    }
+  }
+
+  function removeBgImage() {
+    bgImageDocRef()?.delete().catch((e) => console.warn('Bg image delete failed', e));
+    bgImageDataUrl = null;
+    bgImageEl = null;
+    state.hasBgImage = false;
+    saveState();
+    photoDataCache.clear();
+    luminanceCache.clear();
+    renderBgImageSettings();
+    restartPhotoCarousel();
+    showToast('Background image removed.');
+  }
+
+  function renderBgImageSettings() {
+    if (el.bgImageRow) el.bgImageRow.hidden = !state.removeBg;
+    const has = !!state.hasBgImage;
+    if (el.bgImageRemoveBtn) el.bgImageRemoveBtn.hidden = !has;
+    if (el.bgImagePickBtn) el.bgImagePickBtn.textContent = has ? 'Replace image' : 'Choose image';
+    if (!el.bgImagePreview) return;
+    if (!has) {
+      el.bgImagePreview.hidden = true;
+      el.bgImagePreview.removeAttribute('src');
+      return;
+    }
+    getBgImageDataUrl().then((url) => {
+      if (url && el.bgImagePreview) { el.bgImagePreview.src = url; el.bgImagePreview.hidden = false; }
+    });
   }
 
   /* ----- Background-removal queue ------------------------------------- */
@@ -1300,10 +1406,10 @@
         if (cutout && cutout.data) cutoutDataCache.set(dayNum, cutout);
       }
       if (cutout && cutout.data) {
-        // Transparent cut-outs get the color applied now; legacy baked ones
+        // Transparent cut-outs get the backdrop applied now; legacy baked ones
         // (pre-transparency) are already flat JPEGs.
         const url = cutout.transparent
-          ? await compositeCutoutDataURL(cutout.data, state.bgColor)
+          ? await compositeCutoutDataURL(cutout.data)
           : cutout.data;
         photoDataCache.set(dayNum, url);
         return url;
@@ -1681,7 +1787,7 @@
     const cv = el.photoEditCanvas;
     const ctx = cv.getContext('2d');
     ctx.clearRect(0, 0, cv.width, cv.height);
-    ctx.fillStyle = state.bgColor || '#ededf0';
+    ctx.fillStyle = BG_FALLBACK_COLOR;
     ctx.fillRect(0, 0, cv.width, cv.height);
     ctx.drawImage(work, 0, 0, cv.width, cv.height);
   }
@@ -1727,7 +1833,7 @@
     const scale = M / srcW;
 
     const ctx = mc.getContext('2d');
-    ctx.fillStyle = state.bgColor || '#000';
+    ctx.fillStyle = BG_FALLBACK_COLOR;
     ctx.fillRect(0, 0, M, M);
     let sx = nx - srcW / 2, sy = ny - srcW / 2, sw = srcW, sh = srcW, dx = 0, dy = 0;
     if (sx < 0) { dx = -sx * scale; sw += sx; sx = 0; }
@@ -3403,8 +3509,7 @@
     if (state.startDate) el.startDateInput.value = state.startDate;
     if (el.matchExposureToggle) el.matchExposureToggle.checked = !!state.matchExposure;
     if (el.removeBgToggle) el.removeBgToggle.checked = !!state.removeBg;
-    if (el.bgColorInput) el.bgColorInput.value = state.bgColor || '#ededf0';
-    if (el.bgColorRow) el.bgColorRow.hidden = !state.removeBg;
+    renderBgImageSettings();
     if (state.currentPhase && PHASES[state.currentPhase]) {
       el.resetPhaseLabel.textContent = `Restart ${PHASES[state.currentPhase].name}`;
     }
@@ -3524,6 +3629,7 @@
       photoDataCache.clear();
       cutoutDataCache.clear();
       cutoutUpgradeTried.clear();
+      bgImageDataUrl = null; bgImageEl = null;
       state = defaultState();
       appPhase = 'auth';
       render();
@@ -3759,6 +3865,8 @@
         break;
       }
       case 'reset-water-today': resetWaterToday(); break;
+      case 'pick-bg-image': el.bgImageInput?.click(); break;
+      case 'remove-bg-image': removeBgImage(); break;
       case 'open-photo': openPhotoSheet(journeyDayForViewedDay()); break;
       case 'close-photo':
         if (editState) closeEditView();
@@ -3902,7 +4010,7 @@
   if (el.removeBgToggle) {
     el.removeBgToggle.addEventListener('change', (e) => {
       state.removeBg = e.target.checked;
-      if (el.bgColorRow) el.bgColorRow.hidden = !state.removeBg;
+      renderBgImageSettings();
       saveState();
       // The display variant just changed for every day that has a cut-out, so
       // drop cached images/luminance and re-render — existing photos flip
@@ -3921,20 +4029,12 @@
     });
   }
 
-  if (el.bgColorInput) {
-    // Live-update while dragging the picker; persist + toast on commit.
-    el.bgColorInput.addEventListener('input', (e) => { state.bgColor = e.target.value; });
-    el.bgColorInput.addEventListener('change', (e) => {
-      state.bgColor = e.target.value;
-      saveState();
-      if (state.removeBg) {
-        // Recolor every cut-out from its stored transparent data — no model
-        // rerun, no re-fetch. Clear only the composited cache; keep the cut-outs.
-        photoDataCache.clear();
-        luminanceCache.clear();
-        restartPhotoCarousel();
-      }
-      showToast('Background color updated');
+  // Background image: choose / replace / remove
+  if (el.bgImageInput) {
+    el.bgImageInput.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) uploadBgImage(file);
+      e.target.value = '';
     });
   }
 
