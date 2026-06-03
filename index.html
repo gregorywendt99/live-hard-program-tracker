@@ -399,6 +399,7 @@
               <div class="bg-image-controls">
                 <img id="bgImagePreview" class="bg-image-preview" alt="Background preview" hidden />
                 <button type="button" class="settings-mini-btn" id="bgImagePickBtn" data-action="pick-bg-image">Choose image</button>
+                <button type="button" class="settings-mini-btn" id="bgImageAlignBtn" data-action="align-bg-image" hidden>Align</button>
                 <button type="button" class="settings-mini-btn settings-mini-btn-danger" id="bgImageRemoveBtn" data-action="remove-bg-image" hidden>Remove</button>
               </div>
             </div>
@@ -584,6 +585,34 @@
             <button class="btn btn-danger-soft btn-full" data-action="remove-photo" id="photoRemoveBtn" hidden style="margin-top: 10px;">Remove photo</button>
           </div>
           <p class="settings-hint">Photos are encrypted in transit and stored under your private folder.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Align background sheet -->
+    <div class="sheet" id="bgAlignSheet" aria-hidden="true">
+      <div class="sheet-backdrop" data-action="close-bg-align"></div>
+      <div class="sheet-panel" role="dialog" aria-modal="true" aria-labelledby="bgAlignTitle">
+        <div class="sheet-header">
+          <h2 id="bgAlignTitle">Align background</h2>
+          <button class="icon-btn" data-action="close-bg-align" aria-label="Close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12 M18 6L6 18" /></svg>
+          </button>
+        </div>
+        <div class="sheet-body">
+          <p class="settings-hint" style="margin-top:0;">Drag and zoom the background so it sits where you want behind you. The faded photo is your reference position — every photo lines up to it.</p>
+          <div class="bg-align-stage" id="bgAlignStage">
+            <img class="bg-align-img" id="bgAlignImg" alt="" />
+            <img class="bg-align-ghost" id="bgAlignGhost" alt="" />
+          </div>
+          <div class="bg-align-controls">
+            <span class="settings-label">Zoom</span>
+            <input type="range" id="bgAlignZoom" min="0.5" max="3" step="0.01" value="1" />
+          </div>
+          <div class="bg-align-actions">
+            <button class="btn btn-secondary" data-action="close-bg-align">Cancel</button>
+            <button class="btn btn-primary" data-action="save-bg-align">Save</button>
+          </div>
         </div>
       </div>
     </div>

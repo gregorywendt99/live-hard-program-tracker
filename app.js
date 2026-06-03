@@ -313,8 +313,14 @@
     bgImageRow: $('#bgImageRow'),
     bgImagePreview: $('#bgImagePreview'),
     bgImagePickBtn: $('#bgImagePickBtn'),
+    bgImageAlignBtn: $('#bgImageAlignBtn'),
     bgImageRemoveBtn: $('#bgImageRemoveBtn'),
     bgImageInput: $('#bgImageInput'),
+    bgAlignSheet: $('#bgAlignSheet'),
+    bgAlignStage: $('#bgAlignStage'),
+    bgAlignImg: $('#bgAlignImg'),
+    bgAlignGhost: $('#bgAlignGhost'),
+    bgAlignZoom: $('#bgAlignZoom'),
     photosBgStatus: $('#photosBgStatus'),
     waitProgressFill: $('#waitProgressFill'),
     waitDaysDone: $('#waitDaysDone'),
@@ -1211,6 +1217,7 @@
     if (el.bgImageRow) el.bgImageRow.hidden = !state.removeBg;
     const has = !!state.hasBgImage;
     if (el.bgImageRemoveBtn) el.bgImageRemoveBtn.hidden = !has;
+    if (el.bgImageAlignBtn) el.bgImageAlignBtn.hidden = !has;
     if (el.bgImagePickBtn) el.bgImagePickBtn.textContent = has ? 'Replace image' : 'Choose image';
     if (!el.bgImagePreview) return;
     if (!has) {
@@ -1221,6 +1228,75 @@
     getBgImageDataUrl().then((url) => {
       if (url && el.bgImagePreview) { el.bgImagePreview.src = url; el.bgImagePreview.hidden = false; }
     });
+  }
+
+  /* ----- Align background tool ---------------------------------------- */
+
+  // Position the fixed backdrop behind the cut-outs by dragging/zooming it
+  // against a faded "ghost" of the reference photo (the one all photos align
+  // to). The saved transform is what the carousel's bg layer uses.
+  let bgAlignState = null;
+
+  function applyBgAlignTransform() {
+    if (!bgAlignState || !el.bgAlignImg) return;
+    const { scale, tx, ty } = bgAlignState;
+    el.bgAlignImg.style.transform = `translate(${tx * 100}%, ${ty * 100}%) scale(${scale})`;
+  }
+
+  async function openBgAlignView() {
+    if (!state.hasBgImage) return;
+    const bgUrl = await getBgImageDataUrl();
+    if (!bgUrl) { showToast('No background image to align.'); return; }
+    const refDay = exposureReferenceDay();
+    let ghostUrl = refDay ? await getCutoutTransparentURL(refDay) : null;
+    if (!ghostUrl && refDay) ghostUrl = await fetchOriginalDataURL(refDay);
+    const t = state.bgImageTransform || { scale: 1, tx: 0, ty: 0 };
+    bgAlignState = { scale: t.scale || 1, tx: t.tx || 0, ty: t.ty || 0, dragging: false, lastX: 0, lastY: 0 };
+    el.bgAlignImg.src = bgUrl;
+    if (ghostUrl) { el.bgAlignGhost.src = ghostUrl; el.bgAlignGhost.style.display = 'block'; }
+    else el.bgAlignGhost.style.display = 'none';
+    if (el.bgAlignZoom) el.bgAlignZoom.value = String(bgAlignState.scale);
+    applyBgAlignTransform();
+    el.bgAlignSheet.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeBgAlignView() {
+    bgAlignState = null;
+    el.bgAlignSheet.setAttribute('aria-hidden', 'true');
+  }
+
+  function saveBgAlign() {
+    if (!bgAlignState) return;
+    state.bgImageTransform = { scale: bgAlignState.scale, tx: bgAlignState.tx, ty: bgAlignState.ty };
+    saveState();
+    closeBgAlignView();
+    photoDataCache.clear();
+    restartPhotoCarousel(); // re-positions the bg layer via showPhotoDay
+    showToast('Background aligned.');
+  }
+
+  function bgAlignPointerDown(e) {
+    if (!bgAlignState) return;
+    e.preventDefault();
+    try { el.bgAlignStage.setPointerCapture(e.pointerId); } catch {}
+    bgAlignState.dragging = true;
+    bgAlignState.lastX = e.clientX;
+    bgAlignState.lastY = e.clientY;
+  }
+
+  function bgAlignPointerMove(e) {
+    if (!bgAlignState || !bgAlignState.dragging) return;
+    const r = el.bgAlignStage.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    bgAlignState.tx += (e.clientX - bgAlignState.lastX) / r.width;
+    bgAlignState.ty += (e.clientY - bgAlignState.lastY) / r.height;
+    bgAlignState.lastX = e.clientX;
+    bgAlignState.lastY = e.clientY;
+    applyBgAlignTransform();
+  }
+
+  function bgAlignPointerUp() {
+    if (bgAlignState) bgAlignState.dragging = false;
   }
 
   /* ----- Background-removal queue ------------------------------------- */
@@ -3913,6 +3989,9 @@
       case 'reset-water-today': resetWaterToday(); break;
       case 'pick-bg-image': el.bgImageInput?.click(); break;
       case 'remove-bg-image': removeBgImage(); break;
+      case 'align-bg-image': openBgAlignView(); break;
+      case 'close-bg-align': closeBgAlignView(); break;
+      case 'save-bg-align': saveBgAlign(); break;
       case 'open-photo': openPhotoSheet(journeyDayForViewedDay()); break;
       case 'close-photo':
         if (editState) closeEditView();
@@ -4081,6 +4160,19 @@
       const file = e.target.files?.[0];
       if (file) uploadBgImage(file);
       e.target.value = '';
+    });
+  }
+
+  // Align background tool: drag to pan, slider to zoom
+  if (el.bgAlignStage) {
+    el.bgAlignStage.addEventListener('pointerdown', bgAlignPointerDown);
+    el.bgAlignStage.addEventListener('pointermove', bgAlignPointerMove);
+    el.bgAlignStage.addEventListener('pointerup', bgAlignPointerUp);
+    el.bgAlignStage.addEventListener('pointercancel', bgAlignPointerUp);
+  }
+  if (el.bgAlignZoom) {
+    el.bgAlignZoom.addEventListener('input', (e) => {
+      if (bgAlignState) { bgAlignState.scale = Number(e.target.value) || 1; applyBgAlignTransform(); }
     });
   }
 

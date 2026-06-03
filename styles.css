@@ -2410,6 +2410,36 @@ button.cal-day { cursor: pointer; }
 }
 .settings-mini-btn-danger { color: var(--danger); }
 
+/* Align background tool */
+.bg-align-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--photo-aspect-ratio, 4 / 5);
+  margin: 0 auto 14px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--bg-secondary);
+  touch-action: none;
+  cursor: grab;
+}
+.bg-align-stage:active { cursor: grabbing; }
+.bg-align-img,
+.bg-align-ghost {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform-origin: center;
+  pointer-events: none;
+  user-select: none;
+}
+.bg-align-ghost { opacity: 0.25; }
+.bg-align-controls { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.bg-align-controls input[type="range"] { flex: 1; accent-color: var(--accent); }
+.bg-align-actions { display: flex; gap: 10px; }
+.bg-align-actions .btn { flex: 1; }
+
 .settings-hint {
   font-size: 13px;
   color: var(--text-tertiary);
