@@ -117,8 +117,9 @@
     removeBg: false, // cut the subject out of new photos and place on a backdrop
     hasBgImage: false, // whether a background image has been uploaded
     // Position of the fixed background behind the cut-outs (set via the
-    // "Align background" tool). scale = zoom, tx/ty = pan as a fraction of size.
-    bgImageTransform: { scale: 1, tx: 0, ty: 0 },
+    // "Align background" tool). scale = zoom, tx/ty = pan (fraction of size),
+    // rotate = degrees.
+    bgImageTransform: { scale: 1, tx: 0, ty: 0, rotate: 0 },
   });
 
   let state = defaultState();
@@ -321,6 +322,7 @@
     bgAlignImg: $('#bgAlignImg'),
     bgAlignGhost: $('#bgAlignGhost'),
     bgAlignZoom: $('#bgAlignZoom'),
+    bgAlignRotate: $('#bgAlignRotate'),
     photosBgStatus: $('#photosBgStatus'),
     waitProgressFill: $('#waitProgressFill'),
     waitDaysDone: $('#waitDaysDone'),
@@ -1237,10 +1239,18 @@
   // to). The saved transform is what the carousel's bg layer uses.
   let bgAlignState = null;
 
+  // Shared so the tool preview and the carousel backdrop move identically.
+  function bgTransformCSS(t) {
+    const s = (t && t.scale) || 1;
+    const tx = (t && t.tx) || 0;
+    const ty = (t && t.ty) || 0;
+    const r = (t && t.rotate) || 0;
+    return `translate(${tx * 100}%, ${ty * 100}%) rotate(${r}deg) scale(${s})`;
+  }
+
   function applyBgAlignTransform() {
     if (!bgAlignState || !el.bgAlignImg) return;
-    const { scale, tx, ty } = bgAlignState;
-    el.bgAlignImg.style.transform = `translate(${tx * 100}%, ${ty * 100}%) scale(${scale})`;
+    el.bgAlignImg.style.transform = bgTransformCSS(bgAlignState);
   }
 
   async function openBgAlignView() {
@@ -1248,14 +1258,16 @@
     const bgUrl = await getBgImageDataUrl();
     if (!bgUrl) { showToast('No background image to align.'); return; }
     const refDay = exposureReferenceDay();
-    let ghostUrl = refDay ? await getCutoutTransparentURL(refDay) : null;
-    if (!ghostUrl && refDay) ghostUrl = await fetchOriginalDataURL(refDay);
-    const t = state.bgImageTransform || { scale: 1, tx: 0, ty: 0 };
-    bgAlignState = { scale: t.scale || 1, tx: t.tx || 0, ty: t.ty || 0, dragging: false, lastX: 0, lastY: 0 };
+    // Show the full original reference photo (with its scene) as the ghost, so
+    // you can see where everything is and line the background up to it.
+    const ghostUrl = refDay ? await fetchOriginalDataURL(refDay) : null;
+    const t = state.bgImageTransform || { scale: 1, tx: 0, ty: 0, rotate: 0 };
+    bgAlignState = { scale: t.scale || 1, tx: t.tx || 0, ty: t.ty || 0, rotate: t.rotate || 0, dragging: false, lastX: 0, lastY: 0 };
     el.bgAlignImg.src = bgUrl;
     if (ghostUrl) { el.bgAlignGhost.src = ghostUrl; el.bgAlignGhost.style.display = 'block'; }
     else el.bgAlignGhost.style.display = 'none';
     if (el.bgAlignZoom) el.bgAlignZoom.value = String(bgAlignState.scale);
+    if (el.bgAlignRotate) el.bgAlignRotate.value = String(bgAlignState.rotate);
     applyBgAlignTransform();
     el.bgAlignSheet.setAttribute('aria-hidden', 'false');
   }
@@ -1267,7 +1279,7 @@
 
   function saveBgAlign() {
     if (!bgAlignState) return;
-    state.bgImageTransform = { scale: bgAlignState.scale, tx: bgAlignState.tx, ty: bgAlignState.ty };
+    state.bgImageTransform = { scale: bgAlignState.scale, tx: bgAlignState.tx, ty: bgAlignState.ty, rotate: bgAlignState.rotate };
     saveState();
     closeBgAlignView();
     photoDataCache.clear();
@@ -2736,8 +2748,7 @@
     const url = await getBgImageDataUrl();
     if (!url) { layer.style.display = 'none'; return; }
     if (layer.getAttribute('src') !== url) layer.setAttribute('src', url);
-    const t = state.bgImageTransform || { scale: 1, tx: 0, ty: 0 };
-    layer.style.transform = `translate(${(t.tx || 0) * 100}%, ${(t.ty || 0) * 100}%) scale(${t.scale || 1})`;
+    layer.style.transform = bgTransformCSS(state.bgImageTransform);
     layer.style.display = 'block';
   }
 
@@ -4173,6 +4184,11 @@
   if (el.bgAlignZoom) {
     el.bgAlignZoom.addEventListener('input', (e) => {
       if (bgAlignState) { bgAlignState.scale = Number(e.target.value) || 1; applyBgAlignTransform(); }
+    });
+  }
+  if (el.bgAlignRotate) {
+    el.bgAlignRotate.addEventListener('input', (e) => {
+      if (bgAlignState) { bgAlignState.rotate = Number(e.target.value) || 0; applyBgAlignTransform(); }
     });
   }
 
