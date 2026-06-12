@@ -541,7 +541,6 @@
     el.todayHeading.textContent = `Day ${Math.max(1, dayIdx + 1)} checklist`;
     if (el.tasksEyebrow) el.tasksEyebrow.textContent = isOtherDay ? 'Catching up' : 'Today';
     if (el.resetDayBtn) el.resetDayBtn.textContent = isOtherDay ? 'Reset this day' : 'Reset today';
-    if (el.failDayBtn) el.failDayBtn.hidden = isOtherDay;
 
     if (dayIdx < 0) {
       el.tasksContainer.innerHTML = '<div class="settings-hint" style="text-align:center;padding:24px;">This phase hasn\'t started yet.</div>';
@@ -3732,11 +3731,17 @@
     const phase = PHASES[state.currentPhase];
     if (!phase) return;
     const isPhase3 = state.currentPhase === 'phase3';
+    // The button is available on past days too (a miss is often noticed
+    // later); name the day being failed so the confirm is unambiguous. The
+    // consequence is the same either way: the restart begins today.
+    const dayIdx = getViewDayIndex();
+    const missedPastDay = dayIdx !== anchorDayIndex();
+    const missedLabel = missedPastDay ? `Missed a task on Day ${dayIdx + 1}? ` : '';
     askConfirm({
       title: isPhase3 ? 'Restart entire program?' : `Restart ${phase.name}?`,
-      body: isPhase3
+      body: missedLabel + (isPhase3
         ? 'Per the Live Hard rules, missing a task during Phase 3 resets the entire program back to Day 1 of 75 HARD.'
-        : `You will lose all progress in ${phase.name} and restart from Day 1 today.`,
+        : `You will lose all progress in ${phase.name} and restart from Day 1 today.`),
       onConfirm: () => {
         if (isPhase3) beginJourney();
         else { resetPhase(state.currentPhase, true); showToast(`${phase.name} restarted from Day 1.`); }
