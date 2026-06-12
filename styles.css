@@ -1671,6 +1671,16 @@ html[data-theme="dark"] .icon-btn .icon-moon { display: block; }
 .photos-mode-pill:active { transform: scale(0.95); }
 .photos-mode-pill.hidden { opacity: 0; pointer-events: none; }
 
+/* Scope pill (Current / All time) — appears once a restart has left photos
+   from an earlier run. Outlined so it reads as a filter, distinct from the
+   solid mode pill beside it; fills in while "All time" is active. */
+.photos-scope-pill {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--accent-soft-strong);
+}
+.photos-scope-pill.scope-all { background: var(--accent-soft); }
+.photos-scope-pill.hidden { display: none; }
+
 .photos-stage {
   display: grid;
   grid-template-columns: 1fr 78px;

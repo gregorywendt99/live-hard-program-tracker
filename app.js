@@ -109,7 +109,12 @@
     days: { '75hard': {}, phase1: {}, phase2: {}, phase3: {} },
     settings: { theme: 'auto' },
     waterCustomAmounts: [],
-    photos: {}, // { [journeyDay: number 1-indexed]: { uploadedAt: string, alignment?: { p1, p2 } } }
+    photos: {}, // { [epochDay: number 1-indexed]: { uploadedAt: string, alignment?: { p1, p2 } } }
+    // Date of the FIRST ever Day 1. Photo keys count from here and, unlike
+    // startDate, this never moves when the program is restarted — so the
+    // photo history survives a failed run.
+    photoEpochDate: null,
+    photoScope: 'current', // photo timeline scope: 'current' run | 'all' time
     photoAlignmentRef: { r1: { x: 0.5, y: 0.22 }, r2: { x: 0.5, y: 0.5 }, r3: { x: 0.5, y: 0.78 } },
     photoAspectRatio: null, // width / height of the first uploaded photo
     matchExposure: false, // normalize each photo's brightness to the reference
@@ -197,12 +202,12 @@
     if (viewDayIndex === null) return anchor;
     return Math.max(0, Math.min(viewDayIndex, anchor));
   }
-  // 1-indexed overall journey day for whichever day the checklist is editing
-  // (photos are keyed by journey day, not per-phase day index).
+  // 1-indexed photo (epoch) day for whichever day the checklist is editing
+  // (photos are keyed by epoch day, not per-phase day index).
   function journeyDayForViewedDay() {
     const dayIdx = getViewDayIndex();
     if (!state.startDate || !state.phaseStartDate || dayIdx < 0) return journeyDayForToday();
-    return daysBetween(state.startDate, addDays(state.phaseStartDate, dayIdx)) + 1;
+    return daysBetween(photoEpochISO(), addDays(state.phaseStartDate, dayIdx)) + 1;
   }
   function isDayComplete(phaseId, dayIndex) {
     const day = state.days[phaseId]?.[dayIndex];
@@ -400,6 +405,7 @@
     photosDayTag: $('#photosDayTag'),
     photosRailTrack: $('#photosRailTrack'),
     photosModePill: $('#photosModePill'),
+    photosScopePill: $('#photosScopePill'),
     photosSide: $('.photos-side'),
     photosDownloadBtn: $('#photosDownloadBtn'),
     videoSheet: $('#videoSheet'),
@@ -436,6 +442,7 @@
 
     // appPhase === 'app'
     updateAccountUI();
+    ensurePhotoEpoch();
     if (!state.currentPhase) { showSection('welcome'); return; }
     if (state.currentPhase === 'phase1-wait') { showSection('wait'); renderWait(); return; }
     showSection('dashboard');
@@ -799,20 +806,55 @@
   const PHOTO_QUALITY = 0.75;
   const PHOTO_MAX_BYTES = 900 * 1024; // leave headroom under 1 MB doc cap
 
+  // The date photo day 1 counts from. Falls back to startDate for states
+  // saved before photoEpochDate existed (their keys were startDate-relative,
+  // so the fallback preserves every existing key).
+  function photoEpochISO() {
+    return state.photoEpochDate || state.startDate;
+  }
+
+  // How many days the current run starts after the epoch. 0 until the
+  // program has been restarted at least once.
+  function currentRunOffset() {
+    const epoch = photoEpochISO();
+    if (!epoch || !state.startDate) return 0;
+    return Math.max(0, daysBetween(epoch, state.startDate));
+  }
+
+  // Adopt startDate as the epoch for states saved before it existed.
+  function ensurePhotoEpoch() {
+    if (state.startDate && !state.photoEpochDate) {
+      state.photoEpochDate = state.startDate;
+      saveState();
+    }
+  }
+
+  // "Day N" label for a photo day in the upload sheet / toasts: run-relative
+  // when the day belongs to the current run, date-based when it predates it.
+  function photoDayLabel(dayNum) {
+    const runDay = dayNum - currentRunOffset();
+    if (runDay >= 1) return `Day ${runDay}`;
+    const date = dateForJourneyDay(dayNum);
+    return date ? formatShortDate(date) : `Day ${dayNum}`;
+  }
+
   function journeyDayForToday() {
-    if (!state.startDate) return null;
-    return daysBetween(state.startDate, todayISO()) + 1;
+    const epoch = photoEpochISO();
+    if (!epoch) return null;
+    return daysBetween(epoch, todayISO()) + 1;
   }
 
   function dateForJourneyDay(dayNum) {
-    if (!state.startDate || !dayNum) return null;
-    return addDays(state.startDate, dayNum - 1);
+    const epoch = photoEpochISO();
+    if (!epoch || !dayNum) return null;
+    return addDays(epoch, dayNum - 1);
   }
 
-  // Map a journey day (1-indexed) back to its phase + dayIndex within that phase.
+  // Map a photo (epoch) day (1-indexed) back to its phase + dayIndex within
+  // that phase. Days from a previous run map to nothing and return null.
   function phaseDayFromJourneyDay(dayNum) {
-    if (!state.startDate || !dayNum) return null;
-    const target = addDays(state.startDate, dayNum - 1);
+    if (!photoEpochISO() || !dayNum) return null;
+    const target = addDays(photoEpochISO(), dayNum - 1);
     for (const pid of PHASE_ORDER) {
       const phase = PHASES[pid];
       // Only consider phases that have a known start date
@@ -1672,7 +1714,7 @@
       renderPhotoSheet();
       renderTasks(); renderHero(); renderCalendar(); renderJourney();
       restartPhotoCarousel();
-      showToast(state.removeBg ? `Day ${dayNum} photo saved — removing background…` : `Day ${dayNum} photo saved.`);
+      showToast(state.removeBg ? `${photoDayLabel(dayNum)} photo saved — removing background…` : `${photoDayLabel(dayNum)} photo saved.`);
 
       // Kick off the cut-out in the background (no await) so saving felt instant.
       if (state.removeBg) enqueueCutout(dayNum);
@@ -1688,7 +1730,7 @@
 
   function removePhotoForDay(dayNum) {
     askConfirm({
-      title: `Remove Day ${dayNum} photo?`,
+      title: `Remove ${photoDayLabel(dayNum)} photo?`,
       body: 'This permanently deletes the photo from your account.',
       onConfirm: async () => {
         try {
@@ -1730,10 +1772,15 @@
     if (!dayNum) return;
     const todayDay = journeyDayForToday() || 1;
     const date = dateForJourneyDay(dayNum);
-    el.photoDayLine.textContent = date
-      ? `Day ${dayNum} · ${formatFullDate(date)}`
-      : `Day ${dayNum}`;
-    el.photoTitle.textContent = dayNum === todayDay ? 'Progress photo' : `Day ${dayNum} photo`;
+    // Days kept from a previous run sit below the current run's Day 1; label
+    // those by date instead of a (negative) run day number.
+    const runDay = dayNum - currentRunOffset();
+    el.photoDayLine.textContent = runDay >= 1
+      ? (date ? `Day ${runDay} · ${formatFullDate(date)}` : `Day ${runDay}`)
+      : (date ? `Earlier run · ${formatFullDate(date)}` : 'Earlier run');
+    el.photoTitle.textContent = dayNum === todayDay
+      ? 'Progress photo'
+      : (runDay >= 1 ? `Day ${runDay} photo` : 'Earlier photo');
     el.photoPrevBtn.disabled = dayNum <= 1;
     el.photoNextBtn.disabled = dayNum >= todayDay;
 
@@ -2640,38 +2687,81 @@
       .sort((a, b) => a - b);
   }
 
+  // Photos kept from before the current run (a restarted program).
+  function hasPriorRunPhotos() {
+    const off = currentRunOffset();
+    return off > 0 && uploadedDays().some((d) => d <= off);
+  }
+
+  // Effective timeline scope. 'all' only means something once photos from a
+  // previous run exist; otherwise both scopes are the same set.
+  function photoScope() {
+    return state.photoScope === 'all' && hasPriorRunPhotos() ? 'all' : 'current';
+  }
+
+  function scopedUploadedDays() {
+    const days = uploadedDays();
+    if (photoScope() === 'all') return days;
+    const off = currentRunOffset();
+    return days.filter((d) => d > off);
+  }
+
+  // The day number shown on the stage tag / summary: run-relative in Current
+  // scope, all-time (epoch) numbering in All time scope.
+  function displayDayNum(day) {
+    return photoScope() === 'all' ? day : day - currentRunOffset();
+  }
+
   function renderPhotoRail(activeDay) {
+    renderScopePill();
     const phase = PHASES[state.currentPhase];
     if (!phase || !state.startDate || !state.phaseStartDate) {
       el.photosRailTrack.innerHTML = '';
       updatePhotoSummary(null);
       return;
     }
-    // Show every day of the current phase, even days without photos. The
-    // carousel only plays uploaded days (via uploadedDays()), so empties
-    // are just visible slots — they don't get auto-played but the user
-    // can tap one to upload a photo for that day.
-    const phaseStartJourney = daysBetween(state.startDate, state.phaseStartDate) + 1;
-    const phaseEndJourney = phaseStartJourney + phase.duration - 1;
     const todayDay = journeyDayForToday() || 0;
     const items = [];
-    for (let d = phaseStartJourney; d <= phaseEndJourney; d++) {
-      const phaseDayNum = d - phaseStartJourney + 1;
-      const has = !!(state.photos && state.photos[d]);
-      const isFuture = d > todayDay;
-      const cls = ['photos-day-item'];
-      if (has) cls.push('has-photo');
-      if (d === activeDay) cls.push('active');
-      if (isFuture) cls.push('future');
-      const dateISO = addDays(state.startDate, d - 1);
-      const dateStr = formatShortDate(dateISO);
-      items.push(`
-        <button class="${cls.join(' ')}" type="button" data-action="select-photo-day" data-day="${d}">
-          <span class="photos-day-num">${phaseDayNum}</span>
-          <span class="photos-day-date">${dateStr}</span>
-          <span class="photos-day-dot" aria-hidden="true"></span>
-        </button>
-      `);
+    if (photoScope() === 'all') {
+      // All time: one slot per uploaded photo, across every run — no empty
+      // slots (you can't backfill a previous run from the rail).
+      for (const d of uploadedDays()) {
+        const cls = ['photos-day-item', 'has-photo'];
+        if (d === activeDay) cls.push('active');
+        const dateISO = dateForJourneyDay(d);
+        items.push(`
+          <button class="${cls.join(' ')}" type="button" data-action="select-photo-day" data-day="${d}">
+            <span class="photos-day-num">${d}</span>
+            <span class="photos-day-date">${dateISO ? formatShortDate(dateISO) : ''}</span>
+            <span class="photos-day-dot" aria-hidden="true"></span>
+          </button>
+        `);
+      }
+    } else {
+      // Current run: every day of the current phase, even days without
+      // photos. The carousel only plays uploaded days (via
+      // scopedUploadedDays()), so empties are just visible slots — they
+      // don't get auto-played but the user can tap one to upload a photo.
+      const phaseStartJourney = daysBetween(photoEpochISO(), state.phaseStartDate) + 1;
+      const phaseEndJourney = phaseStartJourney + phase.duration - 1;
+      for (let d = phaseStartJourney; d <= phaseEndJourney; d++) {
+        const phaseDayNum = d - phaseStartJourney + 1;
+        const has = !!(state.photos && state.photos[d]);
+        const isFuture = d > todayDay;
+        const cls = ['photos-day-item'];
+        if (has) cls.push('has-photo');
+        if (d === activeDay) cls.push('active');
+        if (isFuture) cls.push('future');
+        const dateISO = dateForJourneyDay(d);
+        const dateStr = dateISO ? formatShortDate(dateISO) : '';
+        items.push(`
+          <button class="${cls.join(' ')}" type="button" data-action="select-photo-day" data-day="${d}">
+            <span class="photos-day-num">${phaseDayNum}</span>
+            <span class="photos-day-date">${dateStr}</span>
+            <span class="photos-day-dot" aria-hidden="true"></span>
+          </button>
+        `);
+      }
     }
     el.photosRailTrack.innerHTML = items.join('');
     scrollRailTo(activeDay || todayDay);
@@ -2681,7 +2771,7 @@
 
   function updateDownloadButtonState() {
     if (!el.photosDownloadBtn) return;
-    const count = uploadedDays().length;
+    const count = scopedUploadedDays().length;
     el.photosDownloadBtn.disabled = count < 2;
     el.photosDownloadBtn.title = count < 2
       ? 'Upload at least 2 photos to download a GIF'
@@ -2691,27 +2781,32 @@
   function updatePhotoSummary(day) {
     if (!el.photosSummary) return;
     const target = day || journeyDayForToday();
-    if (!target || !state.startDate) {
+    if (!target || !photoEpochISO()) {
       el.photosSummaryDay.textContent = '—';
       el.photosSummaryDate.textContent = '';
       el.photosSummaryPhase.textContent = '';
       el.photosSummaryStats.textContent = '';
       return;
     }
-    el.photosSummaryDay.textContent = `Day ${target}`;
-    const dateISO = addDays(state.startDate, target - 1);
-    el.photosSummaryDate.textContent = formatFullDate(dateISO);
+    el.photosSummaryDay.textContent = `Day ${displayDayNum(target)}`;
+    const dateISO = dateForJourneyDay(target);
+    el.photosSummaryDate.textContent = dateISO ? formatFullDate(dateISO) : '';
     const phaseInfo = phaseDayFromJourneyDay(target);
     if (phaseInfo) {
       const phase = PHASES[phaseInfo.phaseId];
       el.photosSummaryPhase.textContent = `${phase.name} · Day ${phaseInfo.dayIndex + 1} of ${phase.duration}`;
     } else {
-      el.photosSummaryPhase.textContent = '';
+      el.photosSummaryPhase.textContent = photoScope() === 'all' && target <= currentRunOffset() ? 'Earlier run' : '';
     }
-    const uploaded = Object.keys(state.photos || {}).length;
-    const todayDay = journeyDayForToday() || 0;
-    el.photosSummaryStats.textContent =
-      `${uploaded} of ${todayDay} photo${todayDay === 1 ? '' : 's'} uploaded · ${Math.max(0, todayDay - uploaded)} to catch up`;
+    if (photoScope() === 'all') {
+      const total = uploadedDays().length;
+      el.photosSummaryStats.textContent = `${total} photo${total === 1 ? '' : 's'} all time`;
+    } else {
+      const uploaded = scopedUploadedDays().length;
+      const runToday = Math.max(1, (journeyDayForToday() || 1) - currentRunOffset());
+      el.photosSummaryStats.textContent =
+        `${uploaded} of ${runToday} photo${runToday === 1 ? '' : 's'} uploaded · ${Math.max(0, runToday - uploaded)} to catch up`;
+    }
   }
 
   // Light-weight rail update used by the carousel hot path — toggles the
@@ -2816,7 +2911,7 @@
     backEl.style.filter = await exposureFilterFor(day);
 
     el.photosImageWrap.classList.add('has-photo');
-    el.photosDayTag.textContent = `Day ${day}`;
+    el.photosDayTag.textContent = `Day ${displayDayNum(day)}`;
     if (opts.lightRail) updatePhotoRailActive(day);
     else renderPhotoRail(day);
 
@@ -2870,6 +2965,31 @@
     }
   }
 
+  // The Current / All time pill. Only shown once photos from a previous run
+  // exist — until a restart happens there's nothing to switch between.
+  function renderScopePill() {
+    if (!el.photosScopePill) return;
+    if (!hasPriorRunPhotos()) {
+      el.photosScopePill.classList.add('hidden');
+      return;
+    }
+    const all = photoScope() === 'all';
+    el.photosScopePill.textContent = all ? 'All time' : 'Current';
+    el.photosScopePill.classList.toggle('scope-all', all);
+    el.photosScopePill.title = all
+      ? 'Showing every run — tap for the current run only'
+      : 'Showing the current run — tap for all time';
+    el.photosScopePill.classList.remove('hidden');
+  }
+
+  function togglePhotoScope() {
+    state.photoScope = photoScope() === 'all' ? 'current' : 'all';
+    saveState();
+    carouselPaused = false;
+    renderScopePill();
+    restartPhotoCarousel();
+  }
+
   function cycleCarouselMode() {
     const order = ['auto', 'compare', 'sequence'];
     userCarouselMode = order[(order.indexOf(userCarouselMode) + 1) % order.length];
@@ -2905,7 +3025,7 @@
 
   async function runCarousel() {
     clearCarousel();
-    const days = uploadedDays();
+    const days = scopedUploadedDays();
     if (days.length === 0) {
       el.photosImageWrap.classList.remove('has-photo');
       resetPhotoLayers();
@@ -3206,10 +3326,8 @@
     // Date
     ctx.fillStyle = theme.textSecondary;
     ctx.font = `500 14px ${SYS_FONT}`;
-    if (state.startDate) {
-      const dateISO = addDays(state.startDate, data.currentDay - 1);
-      ctx.fillText(formatFullDate(dateISO), innerX, cy);
-    }
+    const dateISO = dateForJourneyDay(data.currentDay);
+    if (dateISO) ctx.fillText(formatFullDate(dateISO), innerX, cy);
     cy += 24;
 
     // Phase line (e.g. "75 HARD · DAY 5 OF 75")
@@ -3281,8 +3399,9 @@
     // Date — start ~52 px in to leave room for 2-digit day numbers
     ctx.fillStyle = isActive ? theme.accent : theme.textSecondary;
     ctx.font = `500 13px ${SYS_FONT}`;
-    if (state.startDate) {
-      ctx.fillText(formatShortDate(addDays(state.startDate, day - 1)), x + padding + 52, cy + 1);
+    const itemDateISO = dateForJourneyDay(day);
+    if (itemDateISO) {
+      ctx.fillText(formatShortDate(itemDateISO), x + padding + 52, cy + 1);
     }
 
     // Dot (right side)
@@ -3368,7 +3487,7 @@
       showToast('GIF encoder failed to load — check your connection.');
       return;
     }
-    const days = uploadedDays();
+    const days = scopedUploadedDays();
     if (days.length < 2) {
       showToast('You need at least 2 photos to make a GIF.');
       return;
@@ -3450,8 +3569,11 @@
     }
     if (videoCancelled) { URL.revokeObjectURL(workerUrl); return; }
 
-    const phaseStartJourney = state.phaseStartDate
-      ? daysBetween(state.startDate, state.phaseStartDate) + 1
+    // All time scope numbers days from the epoch (phaseStartJourney = 1), so
+    // labels and the drawn rail span every run instead of the current phase.
+    const allTime = photoScope() === 'all';
+    const phaseStartJourney = !allTime && state.phaseStartDate
+      ? daysBetween(photoEpochISO(), state.phaseStartDate) + 1
       : 1;
     const phaseDay = (d) => d - phaseStartJourney + 1;
     const ref = defaultRef();
@@ -3463,10 +3585,13 @@
 
     const theme = getThemeTokens();
     const phase = PHASES[state.currentPhase];
-    const phaseDuration = phase ? phase.duration : days.length;
-    const phaseName = phase ? phase.name : '';
+    const phaseDuration = allTime
+      ? (journeyDayForToday() || days[days.length - 1])
+      : (phase ? phase.duration : days.length);
+    const phaseName = allTime ? 'All time' : (phase ? phase.name : '');
     const allPhaseDays = [];
-    for (let i = 0; i < phaseDuration; i++) allPhaseDays.push(phaseStartJourney + i);
+    if (allTime) allPhaseDays.push(...days); // photo days only, across runs
+    else for (let i = 0; i < phaseDuration; i++) allPhaseDays.push(phaseStartJourney + i);
     const photoSet = new Set(Object.keys(state.photos || {}).map(Number).filter(Boolean));
     const baseOpts = {
       W, H, theme, ref, allDays: allPhaseDays, photoSet,
@@ -3534,7 +3659,7 @@
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `live-hard-progress-${todayISO()}.gif`;
+      a.download = `live-hard-progress${allTime ? '-all-time' : ''}-${todayISO()}.gif`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -3566,11 +3691,27 @@
 
   function beginJourney() {
     const settings = state.settings;
-    state = defaultState();
-    state.settings = settings;
+    // A restart (e.g. failing in Phase 3) must never erase the photo
+    // history: carry every photo-related field across. Keys count from the
+    // epoch, so the new run simply uploads at higher day numbers.
+    const keep = {
+      photos: state.photos,
+      photoEpochDate: photoEpochISO(),
+      photoScope: state.photoScope,
+      photoAlignmentRef: state.photoAlignmentRef,
+      photoAspectRatio: state.photoAspectRatio,
+      matchExposure: state.matchExposure,
+      crossfade: state.crossfade,
+      alignmentReferenceDay: state.alignmentReferenceDay,
+      removeBg: state.removeBg,
+      hasBgImage: state.hasBgImage,
+      bgImageTransform: state.bgImageTransform,
+    };
+    state = { ...defaultState(), ...keep, settings };
     state.startDate = todayISO();
     state.currentPhase = '75hard';
     state.phaseStartDate = todayISO();
+    if (!state.photoEpochDate) state.photoEpochDate = state.startDate;
     saveState(); render();
     showToast('Day 1 of 75 HARD. Let\'s go.');
   }
@@ -3608,7 +3749,12 @@
     if (state.currentPhase === phaseId || restartToday) {
       state.currentPhase = phaseId;
       state.phaseStartDate = todayISO();
-      if (phaseId === '75hard') state.startDate = todayISO();
+      if (phaseId === '75hard') {
+        // Pin the photo epoch before moving startDate, so existing photo
+        // keys keep their dates and the restarted run can't overwrite them.
+        if (!state.photoEpochDate) state.photoEpochDate = state.startDate;
+        state.startDate = todayISO();
+      }
     }
     saveState(); render();
   }
@@ -3685,6 +3831,10 @@
       onConfirm: () => {
         const oldStart = state.startDate;
         const diff = daysBetween(oldStart, newDate);
+        // Never restarted → the epoch tracks the start date, so photo keys
+        // keep meaning "day N of the run". After a restart the epoch stays
+        // pinned to the first run and photo dates are unaffected.
+        if (state.photoEpochDate === oldStart || !state.photoEpochDate) state.photoEpochDate = newDate;
         state.startDate = newDate;
         if (state.phaseStartDate === oldStart) state.phaseStartDate = newDate;
         else if (state.phaseStartDate) state.phaseStartDate = addDays(state.phaseStartDate, diff);
@@ -4097,6 +4247,7 @@
         break;
       }
       case 'cycle-photo-mode': cycleCarouselMode(); break;
+      case 'toggle-photo-scope': togglePhotoScope(); break;
       case 'toggle-photo-pause': togglePauseCarousel(); break;
       case 'download-video': downloadProgressVideo(); break;
       case 'cancel-video': cancelVideoExport(); break;
