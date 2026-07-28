@@ -3873,14 +3873,150 @@
 
   /* ----- Export / Import ---------------------------------------------- */
 
-  function exportData() {
-    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `live-hard-${todayISO()}.json`;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showToast('Backup downloaded.');
+  // A full backup bundles the state JSON with every image the account keeps in
+  // Firestore — original photos, background-removed cut-outs, and the carousel
+  // backdrop — embedded as data URLs, so one file can rebuild the whole
+  // account. Backups from before images were included (bare state, no
+  // wrapper) still import.
+  const EXPORT_FORMAT = 2;
+  // Import-side guard: never try to write a doc from a backup file that
+  // Firestore's 1,048,576-byte cap would reject (also bounds what a
+  // hand-edited file can push into an account). Docs read from the server at
+  // export time are NOT size-checked — anything the server stored fits it.
+  const IMAGE_DOC_MAX_BYTES = 1040 * 1024;
+  // Offline, Firestore write promises never settle — stop waiting after this
+  // long instead of hanging the restore forever.
+  const RESTORE_TIMEOUT_MS = 90 * 1000;
+
+  let exportInProgress = false;
+  let importInProgress = false;
+
+  // Export and import touch the same docs and the same `state` — never let
+  // them overlap.
+  function backupBusy() {
+    if (exportInProgress || importInProgress) {
+      showToast('Another backup operation is still running.');
+      return true;
+    }
+    return false;
+  }
+
+  // Run fn over items with at most `limit` in flight at once.
+  async function mapLimit(items, limit, fn) {
+    let next = 0;
+    const lanes = Array.from({ length: Math.min(limit, items.length) }, async () => {
+      while (next < items.length) await fn(items[next++]);
+    });
+    await Promise.all(lanes);
+  }
+
+  // Resolves true when `promise` settles (either way), false on timeout.
+  function settledWithin(promise, ms) {
+    return Promise.race([
+      promise.then(() => true, () => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), ms)),
+    ]);
+  }
+
+  function sanitizeImageDoc(doc, { checkSize = true } = {}) {
+    if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null;
+    if (typeof doc.data !== 'string' || !doc.data.startsWith('data:image/')) return null;
+    if (checkSize) {
+      try { if (JSON.stringify(doc).length > IMAGE_DOC_MAX_BYTES) return null; } catch { return null; }
+    }
+    return doc;
+  }
+
+  // Keep only image entries that are safe to write back: numeric day keys and
+  // docs that pass sanitizeImageDoc.
+  function sanitizeImages(images) {
+    const clean = { photos: {}, cutouts: {}, background: sanitizeImageDoc(images.background) };
+    for (const [day, doc] of Object.entries(images.photos || {})) {
+      const d = /^\d+$/.test(day) ? sanitizeImageDoc(doc) : null;
+      if (d) clean.photos[day] = d;
+    }
+    for (const [day, doc] of Object.entries(images.cutouts || {})) {
+      // A cut-out without its original is dead weight — never restore one.
+      const d = clean.photos[day] ? sanitizeImageDoc(doc) : null;
+      if (d) clean.cutouts[day] = d;
+    }
+    return clean;
+  }
+
+  async function collectImagesForExport() {
+    const images = { photos: {}, cutouts: {} };
+    let missingPhotos = 0;
+    const days = Object.keys(state.photos || {});
+    await mapLimit(days, 8, async (day) => {
+      try {
+        const snap = await photoDocRef(day).get();
+        const doc = snap.exists ? sanitizeImageDoc(snap.data(), { checkSize: false }) : null;
+        if (doc) images.photos[day] = doc;
+      } catch (e) { console.error('Export: photo fetch failed for day', day, e); }
+      if (!images.photos[day]) { missingPhotos++; return; } // no orphaned cut-outs
+      if (!state.photos[day]?.hasCutout) return;
+      try {
+        const snap = await cutoutDocRef(day).get();
+        const doc = snap.exists ? sanitizeImageDoc(snap.data(), { checkSize: false }) : null;
+        if (doc) images.cutouts[day] = doc;
+      } catch (e) { console.error('Export: cut-out fetch failed for day', day, e); }
+    });
+    if (state.hasBgImage) {
+      try {
+        const snap = await bgImageDocRef().get();
+        const doc = snap.exists ? sanitizeImageDoc(snap.data(), { checkSize: false }) : null;
+        if (doc) images.background = doc;
+      } catch (e) { console.error('Export: background fetch failed', e); }
+    }
+    return {
+      images,
+      missingPhotos,
+      photoTotal: days.length,
+      missingBackground: !!state.hasBgImage && !images.background,
+    };
+  }
+
+  async function exportData() {
+    if (backupBusy()) return;
+    exportInProgress = true;
+    try {
+      const backup = {
+        app: 'live-hard',
+        exportFormat: EXPORT_FORMAT,
+        exportedAt: new Date().toISOString(),
+        account: currentUser?.email || null,
+        state,
+      };
+
+      let note = '';
+      if (firestore && currentUser) {
+        if (Object.keys(state.photos || {}).length || state.hasBgImage) showToast('Preparing backup…');
+        const { images, missingPhotos, photoTotal, missingBackground } = await collectImagesForExport();
+        backup.images = images;
+        // Mark incomplete backups in the file itself so a later import can
+        // warn before it removes what's missing here.
+        if (missingPhotos || missingBackground) {
+          backup.missing = { photos: missingPhotos, background: missingBackground };
+        }
+        const got = photoTotal - missingPhotos;
+        if (missingPhotos) note = ` — only ${got} of ${photoTotal} photos could be included`;
+        else if (photoTotal) note = ` — ${got} photo${got === 1 ? '' : 's'} included`;
+        if (missingBackground) note += '; the background image could not be included';
+      }
+
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `live-hard-${todayISO()}.json`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      showToast(`Backup downloaded${note}.`);
+    } catch (e) {
+      console.error('Export failed', e);
+      showToast('Could not create the backup.');
+    } finally {
+      exportInProgress = false;
+    }
   }
 
   function importData(file) {
@@ -3888,20 +4024,155 @@
     reader.onload = (e) => {
       try {
         const parsed = JSON.parse(e.target.result);
-        if (!parsed || typeof parsed !== 'object' || parsed.version !== STATE_VERSION) throw new Error('Invalid file');
+        if (!parsed || typeof parsed !== 'object') throw new Error('Invalid file');
+        // Full backups wrap the state; older exports ARE the state.
+        const isFullBackup = Number.isFinite(parsed.exportFormat) && parsed.state && typeof parsed.state === 'object';
+        const stateObj = isFullBackup ? parsed.state : parsed;
+        const images = isFullBackup && parsed.images && typeof parsed.images === 'object'
+          ? sanitizeImages(parsed.images)
+          : null;
+        if (stateObj.version !== STATE_VERSION) throw new Error('Invalid file');
+        const photoCount = images ? Object.keys(images.photos).length : 0;
+        const canRestoreImages = !!(images && firestore && currentUser);
+        let body;
+        if (!images) {
+          body = 'This will overwrite your current data with the contents of the backup file.';
+        } else if (!canRestoreImages) {
+          body = 'This will overwrite your current data. Photos can’t be restored while you’re not signed in — sign in and import this file again to bring them back.';
+        } else if (photoCount) {
+          body = `This will replace your current data and progress photos with the backup file (${photoCount} photo${photoCount === 1 ? '' : 's'}).`;
+        } else {
+          body = 'This will replace your current data with the backup file. The backup contains no photos, so existing photos will be removed.';
+        }
+        if (canRestoreImages && parsed.missing && typeof parsed.missing === 'object') {
+          const m = [];
+          if (parsed.missing.photos) m.push(`${parsed.missing.photos} photo${parsed.missing.photos === 1 ? '' : 's'}`);
+          if (parsed.missing.background) m.push('the background image');
+          if (m.length) body += ` Note: this backup was created incomplete — ${m.join(' and ')} could not be saved into it, and importing will remove what’s missing from your account.`;
+        }
         askConfirm({
           title: 'Replace current progress?',
-          body: 'This will overwrite your current data with the contents of the backup file.',
-          onConfirm: () => {
-            const def = defaultState();
-            state = { ...def, ...parsed, days: { ...def.days, ...(parsed.days || {}) }, settings: { ...def.settings, ...(parsed.settings || {}) } };
-            saveState(); render(); closeSettings();
-            showToast('Backup restored.');
-          },
+          body,
+          onConfirm: () => applyImport(stateObj, images),
         });
       } catch { showToast('Could not read that file.'); }
     };
     reader.readAsText(file);
+  }
+
+  async function applyImport(stateObj, images) {
+    if (backupBusy()) return;
+    importInProgress = true; // also mutes the Firestore snapshot listener
+    closeSettings();
+    try {
+      const def = defaultState();
+      state = { ...def, ...stateObj, days: { ...def.days, ...(stateObj.days || {}) }, settings: { ...def.settings, ...(stateObj.settings || {}) } };
+
+      // Stop the carousel NOW — left running, it would refill the caches with
+      // pre-import images while the restore is still writing.
+      clearCarousel();
+      photoDataCache.clear();
+      cutoutDataCache.clear();
+      cutoutUpgradeTried.clear();
+      luminanceCache.clear();
+      bgImageDataUrl = null; bgImageEl = null;
+
+      // Persist the imported state before the (long, network-bound) image
+      // restore, so an interruption can't leave the old state on disk.
+      saveStateLocal();
+
+      // Offline, Firestore write promises never settle — restore images only
+      // when the browser thinks it's online, and watchdog it regardless.
+      const signedIn = !!(firestore && currentUser);
+      const canRestoreImages = !!images && signedIn && navigator.onLine !== false;
+      const written = { failed: 0 };
+      let timedOut = false;
+
+      if (canRestoreImages) {
+        showToast('Restoring backup…');
+        const ok = await settledWithin(writeImagesFromBackup(images, written), RESTORE_TIMEOUT_MS);
+        // Deletions run only after every write is acknowledged, so a dropped
+        // connection can never queue deletes for a restore that didn't land.
+        if (ok) timedOut = !(await settledWithin(deleteDocsNotInBackup(images), RESTORE_TIMEOUT_MS));
+        else timedOut = true;
+
+        // Keep the metadata honest about what the file actually contained: a
+        // photo day with no image in the backup has nothing to show, and a
+        // missing cut-out should be regenerated by the backfill queue.
+        for (const [day, meta] of Object.entries(state.photos || {})) {
+          if (!images.photos[day]) { delete state.photos[day]; continue; }
+          if (meta?.hasCutout && !images.cutouts[day]) {
+            meta.hasCutout = false;
+            meta.cutoutTransparent = false;
+            delete meta.cutoutModel;
+            delete meta.cutoutEdited;
+          }
+        }
+        state.hasBgImage = !!images.background;
+        if (images.background) bgImageDataUrl = images.background.data;
+      }
+
+      saveStateLocal();
+      // Push the state doc directly: saveStateRemote's empty-state guard must
+      // not strand a deliberately imported (possibly pre-journey) state.
+      if (signedIn) {
+        await settledWithin(
+          firestore.collection('users').doc(currentUser.uid).set(state)
+            .catch((e) => console.error('Import: state sync failed', e)),
+          RESTORE_TIMEOUT_MS,
+        );
+      }
+      render();
+
+      const n = images ? Object.keys(images.photos).length : 0;
+      if (timedOut) showToast('Backup restored, but syncing photos stalled — check your connection and import the file again.');
+      else if (written.failed) showToast(`Backup restored, but ${written.failed} image${written.failed === 1 ? '' : 's'} couldn't be saved.`);
+      else if (canRestoreImages && n) showToast(`Backup restored — ${n} photo${n === 1 ? '' : 's'}.`);
+      else if (images && signedIn && !canRestoreImages) showToast('Data restored. You appear to be offline — import the file again once connected to restore photos.');
+      else if (images && !signedIn && n) showToast('Data restored. Sign in and import again to restore photos.');
+      else showToast('Backup restored.');
+    } catch (e) {
+      console.error('Import failed', e);
+      saveStateLocal(); render();
+      showToast('Backup restored, but some photos may be missing.');
+    } finally {
+      importInProgress = false;
+    }
+  }
+
+  // Write every image doc the backup contains; failures land in out.failed.
+  async function writeImagesFromBackup(images, out) {
+    await mapLimit(Object.keys(images.photos), 6, async (day) => {
+      try { await photoDocRef(day).set(images.photos[day]); }
+      catch (e) { console.error('Import: photo restore failed for day', day, e); out.failed++; }
+    });
+    await mapLimit(Object.keys(images.cutouts), 6, async (day) => {
+      try { await cutoutDocRef(day).set(images.cutouts[day]); }
+      catch (e) { console.error('Import: cut-out restore failed for day', day, e); out.failed++; }
+    });
+    if (images.background) {
+      try { await bgImageDocRef().set(images.background); }
+      catch (e) { console.error('Import: background restore failed', e); out.failed++; }
+    }
+  }
+
+  // Remove docs the backup doesn't have, so the account ends up matching the
+  // file — a photo deleted after the backup was taken shouldn't survive a
+  // restore. Runs strictly AFTER the writes are acknowledged (see applyImport).
+  async function deleteDocsNotInBackup(images) {
+    try {
+      const userDoc = firestore.collection('users').doc(currentUser.uid);
+      const [photosSnap, cutoutsSnap] = await Promise.all([
+        userDoc.collection('photos').get(),
+        userDoc.collection('photoCutouts').get(),
+      ]);
+      const stale = [
+        ...photosSnap.docs.filter((d) => !images.photos[d.id]).map((d) => d.ref),
+        ...cutoutsSnap.docs.filter((d) => !images.cutouts[d.id]).map((d) => d.ref),
+      ];
+      await mapLimit(stale, 8, (ref) => ref.delete().catch(() => {}));
+      if (!images.background) await bgImageDocRef().delete().catch(() => {});
+    } catch (e) { console.warn('Import: stale doc cleanup failed', e); }
   }
 
   /* ----- Firebase + auth ---------------------------------------------- */
@@ -4007,6 +4278,9 @@
     unsubFirestore = docRef.onSnapshot((snap) => {
       if (!snap.exists) return;
       if (snap.metadata.hasPendingWrites) return;
+      // A running import is authoritative — a snapshot arriving mid-restore
+      // is pre-import data and would clobber the state the user just chose.
+      if (importInProgress) return;
       const data = snap.data();
       if (!data || data.version !== STATE_VERSION) return;
       // Defense: never accept a snapshot that would erase a journey we

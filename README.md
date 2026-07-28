@@ -14,7 +14,7 @@ Single-page web app with email/password accounts and cross-device sync via Fireb
 - Light, dark, and auto themes
 - Per-phase calendar with a completion heatmap
 - Reset controls for today, the current phase, any individual phase, or the entire journey
-- Export / import progress as JSON for backup
+- Export / import progress as JSON for backup — the file bundles all data plus every progress photo, cut-out, and the carousel background, so one file restores the whole account
 - Auto-advance between phases with the mandatory 30-day rest enforced between Phase 1 and Phase 2
 - Works offline — Firestore caches locally and syncs when you're back online
 
