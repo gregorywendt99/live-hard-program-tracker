@@ -115,6 +115,7 @@
     // photo history survives a failed run.
     photoEpochDate: null,
     photoScope: 'current', // photo timeline scope: 'current' run | 'all' time
+    carouselMode: 'auto', // photo carousel display: 'auto' | 'compare' | 'sequence'
     photoAlignmentRef: { r1: { x: 0.5, y: 0.22 }, r2: { x: 0.5, y: 0.5 }, r3: { x: 0.5, y: 0.78 } },
     photoAspectRatio: null, // width / height of the first uploaded photo
     matchExposure: false, // normalize each photo's brightness to the reference
@@ -2656,7 +2657,6 @@
   let carouselTimer = null;
   let carouselCancel = null;
   let photoFrontLayer = 0; // index into [photosImageA, photosImageB]
-  let userCarouselMode = 'auto'; // 'auto' | 'sequence' | 'compare'
   let carouselPaused = false;
   let modeOverrideUntil = 0; // ms timestamp — pill shows the chosen mode until then
   let lastPhaseLabel = '';   // the carousel's current live phase ('Then vs Now', 'Sequence', etc.)
@@ -2952,8 +2952,8 @@
   function renderPillLabel() {
     let text;
     if (carouselPaused) text = 'Paused';
-    else if (userCarouselMode === 'sequence') text = 'Sequence';
-    else if (userCarouselMode === 'compare') text = 'Then vs Now';
+    else if (state.carouselMode === 'sequence') text = 'Sequence';
+    else if (state.carouselMode === 'compare') text = 'Then vs Now';
     else text = lastPhaseLabel; // auto — show whatever the carousel is doing right now
     if (!text) {
       el.photosModePill.textContent = '—';
@@ -2991,14 +2991,15 @@
 
   function cycleCarouselMode() {
     const order = ['auto', 'compare', 'sequence'];
-    userCarouselMode = order[(order.indexOf(userCarouselMode) + 1) % order.length];
+    state.carouselMode = order[(order.indexOf(state.carouselMode) + 1) % order.length];
+    saveState();
     carouselPaused = false;
 
     // Show the chosen mode for 500 ms so the user sees what they picked,
     // then settle into the normal live label.
     const overrideText =
-      userCarouselMode === 'auto' ? 'Auto'
-      : userCarouselMode === 'sequence' ? 'Sequence'
+      state.carouselMode === 'auto' ? 'Auto'
+      : state.carouselMode === 'sequence' ? 'Sequence'
       : 'Then vs Now';
     el.photosModePill.textContent = overrideText;
     el.photosModePill.classList.remove('hidden');
@@ -3075,7 +3076,7 @@
       // When crossfade is off, swap photos instantly (a hard cut).
       const noFade = !state.crossfade;
       // Phase 1: "Then vs Now" — skipped in pure sequence mode
-      if (userCarouselMode !== 'sequence') {
+      if (state.carouselMode !== 'sequence') {
         setFade(compareFadeMs);
         setCarouselMode('Then vs Now');
         await showPhotoDay(days[0], { lightRail: true, instant: noFade });
@@ -3089,12 +3090,12 @@
       }
 
       // Phase 2: Sequence — skipped in pure compare mode
-      if (userCarouselMode !== 'compare') {
+      if (state.carouselMode !== 'compare') {
         setFade(seqFadeMs);
         setCarouselMode('Sequence');
         const seqOpts = { lightRail: true, instant: noFade };
         // Only pause on the first frame when Sequence is the looping mode.
-        const firstHold = userCarouselMode === 'sequence' ? SEQ_LOOP_HOLD_MS : seqPerPhoto;
+        const firstHold = state.carouselMode === 'sequence' ? SEQ_LOOP_HOLD_MS : seqPerPhoto;
         for (let i = 0; i < days.length; i++) {
           if (cancelled) break;
           await showPhotoDay(days[i], seqOpts);
