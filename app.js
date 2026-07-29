@@ -4021,17 +4021,32 @@
 
   function importData(file) {
     const reader = new FileReader();
+    reader.onerror = () => showToast('Couldn’t read that file from your device.');
     reader.onload = (e) => {
+      let parsed;
       try {
-        const parsed = JSON.parse(e.target.result);
-        if (!parsed || typeof parsed !== 'object') throw new Error('Invalid file');
+        parsed = JSON.parse(e.target.result);
+      } catch (err) {
+        console.error('Import: file is not valid JSON', err);
+        showToast('That file isn’t readable as a backup — it may be incomplete or modified.');
+        return;
+      }
+      try {
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          showToast('That file doesn’t look like a Live Hard backup.');
+          return;
+        }
         // Full backups wrap the state; older exports ARE the state.
         const isFullBackup = Number.isFinite(parsed.exportFormat) && parsed.state && typeof parsed.state === 'object';
         const stateObj = isFullBackup ? parsed.state : parsed;
         const images = isFullBackup && parsed.images && typeof parsed.images === 'object'
           ? sanitizeImages(parsed.images)
           : null;
-        if (stateObj.version !== STATE_VERSION) throw new Error('Invalid file');
+        if (!stateObj || typeof stateObj !== 'object' || stateObj.version !== STATE_VERSION) {
+          console.error('Import: unrecognized backup shape/version', stateObj && stateObj.version);
+          showToast('That file doesn’t look like a Live Hard backup.');
+          return;
+        }
         const photoCount = images ? Object.keys(images.photos).length : 0;
         const canRestoreImages = !!(images && firestore && currentUser);
         let body;
@@ -4055,7 +4070,10 @@
           body,
           onConfirm: () => applyImport(stateObj, images),
         });
-      } catch { showToast('Could not read that file.'); }
+      } catch (err) {
+        console.error('Import failed', err);
+        showToast('Could not read that file.');
+      }
     };
     reader.readAsText(file);
   }
